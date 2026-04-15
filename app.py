@@ -254,6 +254,20 @@ def save_profile(username, profile):
         json.dump(profile, f, ensure_ascii=False, indent=2)
 
 
+def load_history(username) -> list:
+    if _GH_TOKEN:
+        hist, _ = _gh_read(f"history/{username}.json")
+        return hist if isinstance(hist, list) else []
+    d = os.path.join(DATA_DIR, username)
+    hf = os.path.join(d, "history.json")
+    if os.path.exists(hf):
+        try:
+            return json.load(open(hf, encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
 def save_history(username, entry):
     if _GH_TOKEN:
         hist, sha = _gh_read(f"history/{username}.json")
