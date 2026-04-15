@@ -138,8 +138,9 @@ def authenticate(username, pw):
     u = load_users().get(username)
     return u if u and _verify_pw(pw, u["password_hash"]) else None
 
-def register_user(username, name, pw):
-    if len(username) < 2: return False, "아이디는 2자 이상"
+def register_user(name, pw):
+    username = name.strip()
+    if len(username) < 1: return False, "이름을 입력하세요"
     if len(pw) < 4:       return False, "암호는 4자 이상"
     users = load_users()
     if username in users: return False, "이미 사용 중인 아이디"
@@ -691,41 +692,42 @@ if not st.session_state.authenticated:
 
     _, mid, _ = st.columns([1,1.4,1])
     with mid:
-        mode = st.radio("", ["로그인","계정 만들기"],
-                        index=0 if st.session_state.auth_mode=="login" else 1,
-                        horizontal=True, label_visibility="collapsed")
-        st.session_state.auth_mode = "login" if mode=="로그인" else "register"
+        def _set_mode():
+            st.session_state.auth_mode = "login" if st.session_state._auth_radio=="로그인" else "register"
+        st.radio("", ["로그인","계정 만들기"],
+                 index=0 if st.session_state.auth_mode=="login" else 1,
+                 horizontal=True, label_visibility="collapsed",
+                 key="_auth_radio", on_change=_set_mode)
 
         with st.container(border=True):
             if st.session_state.auth_mode == "login":
                 st.markdown("#### 로그인")
-                u = st.text_input("아이디", key="li_u")
+                u = st.text_input("이름", key="li_u", placeholder="가입할 때 입력한 이름")
                 p = st.text_input("암호", type="password", key="li_p")
                 if st.button("로그인", use_container_width=True):
                     if u and p:
-                        user = authenticate(u, p)
+                        user = authenticate(u.strip(), p)
                         if user:
                             st.session_state.authenticated = True
-                            st.session_state.username  = u
+                            st.session_state.username  = u.strip()
                             st.session_state.user_name = user["name"]
                             st.rerun()
                         else:
-                            st.error("아이디 또는 암호가 맞지 않습니다.")
+                            st.error("이름 또는 암호가 맞지 않습니다.")
                     else:
-                        st.warning("아이디와 암호를 입력하세요.")
+                        st.warning("이름과 암호를 입력하세요.")
             else:
                 st.markdown("#### 계정 만들기")
-                rn = st.text_input("이름", key="rg_n")
-                ru = st.text_input("아이디", key="rg_u")
+                rn = st.text_input("이름", key="rg_n", placeholder="예: 김철수")
                 rp = st.text_input("암호", type="password", key="rg_p")
                 rp2= st.text_input("암호 확인", type="password", key="rg_p2")
                 if st.button("가입하기", use_container_width=True):
-                    if not all([rn,ru,rp,rp2]):
+                    if not all([rn, rp, rp2]):
                         st.warning("모든 항목을 입력하세요.")
                     elif rp != rp2:
                         st.error("암호가 일치하지 않습니다.")
                     else:
-                        ok, err = register_user(ru, rn, rp)
+                        ok, err = register_user(rn, rp)
                         if ok:
                             st.success("계정이 생성됐습니다. 로그인해주세요.")
                             st.session_state.auth_mode = "login"
@@ -740,7 +742,6 @@ if not st.session_state.authenticated:
 # ═════════════════════════════════════════════
 with st.sidebar:
     st.markdown(f"### {st.session_state.user_name}")
-    st.caption(f"@{st.session_state.username}")
     if st.button("로그아웃", use_container_width=True):
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
@@ -817,10 +818,12 @@ if st.session_state.phase == "q1":
         if st.button("분석 시작 →", use_container_width=True):
             if kw.strip():
                 st.session_state.keyword = kw.strip()
-                with st.spinner("GPT 분석 중..."):
-                    st.session_state.suggested_needs   = gpt_suggest_needs(oai_client, kw.strip())
-                    st.session_state.suggested_context = gpt_suggest_context(
-                        oai_client, kw.strip(), st.session_state.suggested_needs)
+                _ph = st.empty()
+                _ph.info("⏳ AI가 조사 항목을 분석 중입니다...")
+                st.session_state.suggested_needs   = gpt_suggest_needs(oai_client, kw.strip())
+                st.session_state.suggested_context = gpt_suggest_context(
+                    oai_client, kw.strip(), st.session_state.suggested_needs)
+                _ph.empty()
                 st.session_state.phase = "q_full"
                 st.rerun()
             else:
@@ -903,7 +906,7 @@ elif st.session_state.phase == "running":
     failed        = False
     grok_signal   = ""
 
-    with st.status(f"🔍 **{config['keyword']}** 리서치 진행 중...", expanded=True) as status:
+    with st.status(f"🔍 **{config['keyword']}** 리서치 진행 중...", expanded=False) as status:
         try:
             # 1. 플랜 (DeepSeek deepseek-chat 우선, Claude Sonnet fallback)
             st.write("📋 리서치 플랜 수립 중... (DeepSeek R1)")
