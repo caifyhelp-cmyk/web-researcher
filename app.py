@@ -194,6 +194,7 @@ def _verify_pw(pw, stored):
     except Exception:
         return False
 
+@st.cache_data(ttl=60, show_spinner=False)
 def load_users():
     if _GH_TOKEN:
         data, _ = _gh_read("users.json")
@@ -201,6 +202,7 @@ def load_users():
     return json.load(open(USERS_FILE, encoding="utf-8")) if os.path.exists(USERS_FILE) else {}
 
 def save_users(u):
+    load_users.clear()
     if _GH_TOKEN:
         _, sha = _gh_read("users.json")
         _gh_write("users.json", u, sha, "save users")
@@ -231,6 +233,7 @@ def user_dir(username):
     os.makedirs(d, exist_ok=True)
     return d
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_profile(username) -> dict:
     if _GH_TOKEN:
         data, _ = _gh_read(f"profiles/{username}.json")
@@ -244,6 +247,7 @@ def load_profile(username) -> dict:
             pass
     return {"system_prompt": "", "rules": {}, "history": []}
 def save_profile(username, profile):
+    load_profile.clear()
     if _GH_TOKEN:
         _, sha = _gh_read(f"profiles/{username}.json")
         _gh_write(f"profiles/{username}.json", profile, sha, f"save profile {username}")
@@ -254,6 +258,7 @@ def save_profile(username, profile):
         json.dump(profile, f, ensure_ascii=False, indent=2)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def load_history(username) -> list:
     if _GH_TOKEN:
         hist, _ = _gh_read(f"history/{username}.json")
@@ -269,6 +274,7 @@ def load_history(username) -> list:
 
 
 def save_history(username, entry):
+    load_history.clear()
     if _GH_TOKEN:
         hist, sha = _gh_read(f"history/{username}.json")
         if not isinstance(hist, list):
