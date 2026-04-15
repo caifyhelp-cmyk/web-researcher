@@ -742,7 +742,7 @@ if not st.session_state.authenticated:
     with mid:
         def _set_mode():
             st.session_state.auth_mode = "login" if st.session_state._auth_radio=="로그인" else "register"
-        st.radio("", ["로그인","계정 만들기"],
+        st.radio("로그인 / 계정 만들기", ["로그인","계정 만들기"],
                  index=0 if st.session_state.auth_mode=="login" else 1,
                  horizontal=True, label_visibility="collapsed",
                  key="_auth_radio", on_change=_set_mode)
@@ -954,14 +954,16 @@ elif st.session_state.phase == "running":
     failed        = False
     grok_signal   = ""
 
-    with st.status(f"🔍 **{config['keyword']}** 리서치 진행 중...", expanded=False) as status:
+    _t0 = time.time()
+    def _log(msg): st.write(f"{msg}  ·  {time.time()-_t0:.1f}s")
+    with st.status(f"🔍 **{config['keyword']}** 리서치 진행 중...", expanded=True) as status:
         try:
             # 1. 플랜 (DeepSeek deepseek-chat 우선, Claude Sonnet fallback)
-            st.write("📋 리서치 플랜 수립 중... (DeepSeek R1)")
+            _log("📋 [1/6] 리서치 플랜 수립 중... (DeepSeek R1)")
             plan = build_plan_claude(config, username)
             research_type = plan.get("type","B")
             used_llm = plan.get("_llm","deepseek-chat")
-            st.write(f"  → {research_type}타입 | {plan.get('reason','')}  ·  [{used_llm}]")
+            _log(f"  → {research_type}타입 | {plan.get('reason','')} [{used_llm}]")
 
             # 2. 사용자 규칙 파이프라인 직접 적용
             rules = load_profile(username).get("rules", {})
@@ -977,7 +979,7 @@ elif st.session_state.phase == "running":
             st.session_state.plan = plan
 
             # 3. URL 수집
-            st.write("🌐 URL 수집 중...")
+            _log("🌐 [2/6] URL 수집 중... (Naver+Google+DuckDuckGo)")
             if research_type == "A":
                 td = plan.get("target_domain","")
                 base_url = (td if td.startswith("http") else f"https://www.{td}") if td else ""
@@ -1007,13 +1009,13 @@ elif st.session_state.phase == "running":
                 status.update(label="URL 수집 실패", state="error")
             else:
                 # 4. 스크래핑 + 분석 (GPT-4o-mini)
-                st.write(f"🤖 {len(pages)}개 페이지 분석 중... (GPT-4o-mini)")
+                _log(f"🤖 [3/6] {len(pages)}개 페이지 분석 중... (GPT-4o-mini)")
                 if driver is None: driver = make_driver()
                 prog = st.progress(0)
 
                 for i, pg in enumerate(pages):
                     prog.progress((i+1)/len(pages))
-                    st.write(f"  [{i+1}/{len(pages)}] {pg.get('domain',pg.get('url',''))[:55]}")
+                    _log(f"  [{i+1}/{len(pages)}] {pg.get('domain',pg.get('url',''))[:50]}")
                     page_data = scrape_page(driver, pg["url"])
                     if page_data.get("error"):
                         st.write("    ⚠️ 접속 실패 — 건너뜀")
@@ -1029,13 +1031,13 @@ elif st.session_state.phase == "running":
 
                 # 5. 종합 인사이트 (Claude Opus 4.6 + 개인 시스템 프롬프트)
                 if all_results:
-                    st.write("💡 종합 인사이트 생성 중... (Claude Opus 4.6)")
+                    _log("💡 [4/6] 종합 인사이트 생성 중... (Claude Opus 4.6)")
                     insights = generate_insights(all_results, config, username)
 
                 # 6. Grok 실시간 시장 신호 (xAI grok-3)
                 grok_signal = ""
                 if all_results and insights:
-                    st.write("⚡ 실시간 시장 신호 보완 중... (Grok mini-fast)")
+                    _log("⚡ [5/6] 실시간 시장 신호 보완 중... (Grok)")
                     grok_signal = get_grok_realtime(config, insights)
                     if grok_signal:
                         st.write("  ✅ Grok 실시간 보완 완료")
@@ -1045,7 +1047,7 @@ elif st.session_state.phase == "running":
                 # 7. 뇌 에이전트
                 brain_result, fired_patterns = None, []
                 if all_results and is_marketing(config):
-                    st.write("🧠 뇌 에이전트 마케팅 전략 도출 중...")
+                    _log("🧠 [6/6] 뇌 에이전트 마케팅 전략 도출 중...")
                     brain_result, fired_patterns = call_brain_agent(config, all_results, insights)
                     if brain_result:
                         st.write(f"  ✅ {len(fired_patterns)}개 패턴 발동")
