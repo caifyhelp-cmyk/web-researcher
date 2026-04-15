@@ -25,9 +25,9 @@ from web_researcher import (
 # ─────────────────────────────────────────────
 #  상수
 # ─────────────────────────────────────────────
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "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")
-DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY",  "sk-4fbf65d06b1f4c67a060f629694db649")
-GROK_API_KEY      = os.getenv("GROK_API_KEY",      "xai-uUp0iKtmcod8PwOJL1k7pweEZ8laI7SVOiCINFFFK8gAvYhURcw99uc3Z80s6hpYPGJYKFSfV4TP7q82")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+DEEPSEEK_API_KEY  = os.getenv("DEEPSEEK_API_KEY",  "")
+GROK_API_KEY      = os.getenv("GROK_API_KEY",      "")
 BRAIN_AGENT_URL   = "https://brain-agent-v9wl.onrender.com"
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR   = os.path.join(BASE_DIR, "data")

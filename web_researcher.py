@@ -32,7 +32,7 @@ from openai import OpenAI
 # ──────────────────────────────────────────────
 #  설정
 # ──────────────────────────────────────────────
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "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")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 NAVER_DELAY = 2.0
 GOOGLE_DELAY = 2.5
 SELENIUM_DELAY = 3.0
