@@ -1,22 +1,13 @@
 @echo off
 chcp 65001 > nul
 cd /d "%~dp0"
-
+if not exist "%USERPROFILE%\.streamlit" mkdir "%USERPROFILE%\.streamlit"
+echo [browser] > "%USERPROFILE%\.streamlit\config.toml"
+echo gatherUsageStats = false >> "%USERPROFILE%\.streamlit\config.toml"
 echo.
-echo  패키지 확인 중...
-pip install streamlit openai anthropic selenium webdriver-manager ^
-    openpyxl requests beautifulsoup4 pandas ^
-    duckduckgo-search reportlab python-pptx ^
-    "openai>=1.30.0,<2.0.0" -q
-
+echo  웹 리서치 어시스턴트 시작 중...
+echo  브라우저가 자동으로 열립니다. (5-10초)
+echo  이 창을 닫으면 앱이 종료됩니다.
 echo.
-echo  웹 리서치 어시스턴트 실행 중...
-echo  브라우저가 자동으로 열립니다.
-echo.
-
-streamlit run app.py ^
-    --server.headless false ^
-    --server.port 8501 ^
-    --browser.gatherUsageStats false
-
+"C:\Users\조경일\AppData\Local\Python\pythoncore-3.14-64\python.exe" -m streamlit run app.py --server.headless false --server.port 8501 --browser.gatherUsageStats false
 pause
