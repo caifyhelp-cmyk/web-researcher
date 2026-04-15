@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: web-researcher
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: researcher-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: GROK_API_KEY
+        sync: false
