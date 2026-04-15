@@ -733,6 +733,16 @@ for k,v in dict(
     if k not in st.session_state:
         st.session_state[k] = v
 
+# WebSocket 재연결 시 URL 파라미터로 세션 복구
+if not st.session_state.authenticated:
+    _p = st.query_params.get("u", "")
+    if _p:
+        _users = load_users()
+        if _p in _users:
+            st.session_state.authenticated = True
+            st.session_state.username  = _p
+            st.session_state.user_name = _users[_p].get("name", _p)
+
 
 # ═════════════════════════════════════════════
 #  인증 화면
@@ -765,6 +775,7 @@ if not st.session_state.authenticated:
                             st.session_state.authenticated = True
                             st.session_state.username  = u.strip()
                             st.session_state.user_name = user["name"]
+                            st.query_params["u"] = u.strip()
                             st.rerun()
                         else:
                             st.error("이름 또는 암호가 맞지 않습니다.")
@@ -797,6 +808,7 @@ if not st.session_state.authenticated:
 with st.sidebar:
     st.markdown(f"### {st.session_state.user_name}")
     if st.button("로그아웃", use_container_width=True):
+        st.query_params.clear()
         for k in list(st.session_state.keys()): del st.session_state[k]
         st.rerun()
 
