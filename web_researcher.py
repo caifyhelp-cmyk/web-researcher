@@ -10,6 +10,11 @@
 """
 
 import os, time, re, json, random
+try:
+    from duckduckgo_search import DDGS
+    _DDG_OK = True
+except ImportError:
+    _DDG_OK = False
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urlparse, urljoin, unquote
@@ -346,6 +351,29 @@ def search_google(query, max_results=15):
     return results[:max_results]
 
 
+
+
+def search_duckduckgo(query, max_results=15):
+    """DuckDuckGo 검색 — 서버 IP 차단 없음, 무료"""
+    if not _DDG_OK:
+        return []
+    results, seen = [], set()
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, region='kr-kr', max_results=max_results):
+                url   = r.get('href', '')
+                title = r.get('title', '') or r.get('body', '')[:60]
+                if not url.startswith('http'):
+                    continue
+                domain = urlparse(url).netloc.lower()
+                if domain in seen:
+                    continue
+                seen.add(domain)
+                results.append({"url": url, "title": title, "domain": domain, "source": "ddg"})
+    except Exception as e:
+        print(f"    [!] DDG 오류: {e}")
+    return results
+
 def collect_candidates(plan, exclude_all, collect_target):
     """네이버 + 구글로 후보 URL 수집 (중복 제거, is_bulk 시 entity_queries 추가)"""
     urls_seen  = set()
@@ -387,6 +415,23 @@ def collect_candidates(plan, exclude_all, collect_target):
             urls_seen.add(domain)
             candidates.append(item)
             print(f"      [후보] {domain} (Google)")
+
+    # ── DuckDuckGo 폴백: 네이버+구글 결과 부족 시 ──────────────────
+    if len(candidates) < collect_target // 2 and _DDG_OK:
+        print("  [DDG 폴백] 네이버/구글 결과 부족 → DuckDuckGo 검색")
+        all_queries = (naver_queries + google_queries)[:4]
+        for q in all_queries:
+            if len(candidates) >= collect_target: break
+            print(f"    → DDG '{q}'")
+            for item in search_duckduckgo(q):
+                if len(candidates) >= collect_target: break
+                domain = item["domain"]
+                bare   = domain.replace("www.", "")
+                if any(bare == ex or bare.endswith("."+ex) for ex in exclude_all): continue
+                if domain in urls_seen: continue
+                urls_seen.add(domain)
+                candidates.append(item)
+                print(f"      [DDG후보] {domain}")
 
     return candidates
 

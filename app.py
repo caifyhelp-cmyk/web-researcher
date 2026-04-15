@@ -1,6 +1,27 @@
 # -*- coding: utf-8 -*-
 """웹 리서치 어시스턴트 v3 — 진짜 맞춤형 LLM (피드백 = 시스템 프롬프트 + 파이프라인 규칙)"""
 
+# PDF / PPT 내보내기
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.lib import colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+    _PDF_OK = True
+except ImportError:
+    _PDF_OK = False
+
+try:
+    from pptx import Presentation
+    from pptx.util import Inches, Pt, Emu
+    from pptx.dml.color import RGBColor
+    _PPT_OK = True
+except ImportError:
+    _PPT_OK = False
+
 import streamlit as st
 import pandas as pd
 import json, io, os, sys, re, time, random, hashlib
@@ -592,6 +613,130 @@ def results_to_df(all_results, config):
         rows.append(row)
     return pd.DataFrame(rows)
 
+
+def make_pdf_bytes(all_results, config, research_type, insights, brain_result, grok_signal=""):
+    """reportlab CJK 폰트로 한글 PDF 생성"""
+    if not _PDF_OK:
+        return None
+    buf = io.BytesIO()
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
+        KR_FONT = "HYSMyeongJo-Medium"
+    except Exception:
+        KR_FONT = "Helvetica"
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=20*mm, rightMargin=20*mm,
+                            topMargin=20*mm, bottomMargin=20*mm)
+    story = []
+    styles = getSampleStyleSheet()
+    def ps(name, **kw):
+        return ParagraphStyle(name, parent=styles["Normal"], fontName=KR_FONT, **kw)
+    title_st   = ps("T", fontSize=18, spaceAfter=6, textColor=colors.HexColor("#6366f1"), leading=24)
+    h1_st      = ps("H1", fontSize=13, spaceAfter=4, textColor=colors.HexColor("#334155"), leading=18, spaceBefore=10)
+    body_st    = ps("B", fontSize=9, spaceAfter=4, leading=14, textColor=colors.HexColor("#1e293b"))
+    caption_st = ps("C", fontSize=8, spaceAfter=2, textColor=colors.HexColor("#64748b"), leading=12)
+    def safe(text):
+        if not text: return ""
+        return str(text).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    kw = config.get("keyword", "")
+    story.append(Paragraph(f"리서치 보고서: {safe(kw)}", title_st))
+    story.append(Paragraph(f"타입: {research_type}  |  수집: {len(all_results)}개  |  생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}", caption_st))
+    story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#6366f1"), spaceAfter=8))
+    if insights:
+        story.append(Paragraph("종합 인사이트 (Claude Opus 4.6)", h1_st))
+        for line in insights.split(chr(10)):
+            if line.strip():
+                story.append(Paragraph(safe(line.strip()), body_st))
+        story.append(Spacer(1, 6*mm))
+    if grok_signal:
+        story.append(Paragraph("실시간 시장 신호 (Grok)", h1_st))
+        for line in grok_signal.split(chr(10)):
+            if line.strip():
+                story.append(Paragraph(safe(line.strip()), body_st))
+        story.append(Spacer(1, 6*mm))
+    if brain_result:
+        story.append(Paragraph("뇌 에이전트 마케팅 전략", h1_st))
+        j = brain_result.get("judgment","")
+        a = brain_result.get("action","")
+        if j: story.append(Paragraph(f"판단: {safe(j)}", body_st))
+        if a: story.append(Paragraph(f"액션: {safe(a)}", body_st))
+        story.append(Spacer(1, 6*mm))
+    if all_results:
+        story.append(Paragraph("수집 사이트 목록", h1_st))
+        for i, r in enumerate(all_results, 1):
+            g = r.get("gpt", {})
+            story.append(Paragraph(f"{i}. {safe(r.get('domain',''))}  —  {safe(g.get('한줄요약',''))}", body_st))
+            story.append(Paragraph(safe(r.get("url","")[:80]), caption_st))
+    doc.build(story)
+    return buf.getvalue()
+
+
+def make_pptx_bytes(all_results, config, research_type, insights, brain_result, grok_signal=""):
+    """python-pptx로 한글 PPT 생성"""
+    if not _PPT_OK:
+        return None
+    prs = Presentation()
+    prs.slide_width  = Emu(9144000)
+    prs.slide_height = Emu(5143500)
+    PURPLE = RGBColor(0x63, 0x66, 0xf1)
+    DARK   = RGBColor(0x1e, 0x29, 0x3b)
+    GRAY   = RGBColor(0x64, 0x74, 0x8b)
+    blank_layout = prs.slide_layouts[6]
+    def add_slide(title_text, body_lines, title_color=None, small=False):
+        if title_color is None: title_color = PURPLE
+        slide = prs.slides.add_slide(blank_layout)
+        bg = slide.background.fill
+        bg.solid()
+        bg.fore_color.rgb = RGBColor(0x0f, 0x17, 0x2a)
+        tx = slide.shapes.add_textbox(Emu(457200), Emu(228600), Emu(8229600), Emu(685800))
+        tf = tx.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        p.text = title_text
+        p.font.size = Pt(20 if not small else 16)
+        p.font.bold = True
+        p.font.color.rgb = title_color
+        bx = slide.shapes.add_textbox(Emu(457200), Emu(1066800), Emu(8229600), Emu(3810000))
+        bf = bx.text_frame
+        bf.word_wrap = True
+        for j, line in enumerate(body_lines):
+            para = bf.paragraphs[0] if j == 0 else bf.add_paragraph()
+            para.text = str(line)
+            para.font.size = Pt(12 if not small else 10)
+            para.font.color.rgb = RGBColor(0xf1, 0xf5, 0xf9)
+            para.space_after = Pt(4)
+        return slide
+    kw = config.get("keyword", "")
+    add_slide("리서치 보고서", [f"주제: {kw}", f"타입: {research_type}타입  |  수집: {len(all_results)}개", f"생성: {datetime.now().strftime('%Y-%m-%d %H:%M')}"])
+    if insights:
+        lines = [l for l in insights.split(chr(10)) if l.strip()]
+        chunks, chunk = [], []
+        for line in lines:
+            chunk.append(line.strip())
+            if len(chr(10).join(chunk)) > 500:
+                chunks.append(chunk); chunk = []
+        if chunk: chunks.append(chunk)
+        for ci, ch in enumerate(chunks[:4], 1):
+            add_slide(f"종합 인사이트 ({ci}/{min(len(chunks),4)})", ch, small=True)
+    if grok_signal:
+        glines = [l.strip() for l in grok_signal.split(chr(10)) if l.strip()][:10]
+        add_slide("실시간 시장 신호 (Grok)", glines, small=True)
+    if brain_result:
+        br_lines = []
+        j_txt = brain_result.get("judgment","")
+        a_txt = brain_result.get("action","")
+        if j_txt: br_lines += ["[판단]", j_txt.strip()]
+        if a_txt: br_lines += ["", "[액션 플랜]", a_txt.strip()]
+        add_slide("뇌 에이전트 마케팅 전략", br_lines, small=True)
+    if all_results:
+        for ci in range(0, min(len(all_results), 36), 12):
+            chunk = all_results[ci:ci+12]
+            lines = [f"{ci+j+1}. {r.get('domain','')}  — {r.get('gpt',{}).get('한줄요약','')[:50]}" for j, r in enumerate(chunk)]
+            add_slide(f"수집 사이트 ({ci+1}~{ci+len(chunk)})", lines, title_color=GRAY, small=True)
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
 def make_xlsx_bytes(all_results, config, research_type, insights, brain_result=None):
     needs=config.get("needs",[])
     THIN=Side(style="thin",color="CCCCCC")
@@ -1092,7 +1237,7 @@ elif st.session_state.phase == "results":
     st.markdown("### 💾 내보내기")
     safe_kw  = re.sub(r'[\\/:*?"<>|]',"_",config.get("keyword","리서치"))
     filename = f"리서치_{safe_kw}_{datetime.now().strftime('%Y%m%d_%H%M')}"
-    t1,t2,t3 = st.tabs(["📊 Excel (기본)","📄 CSV","{ } JSON"])
+    t1,t2,t3,t4,t5 = st.tabs(["📊 Excel","📄 CSV","{ } JSON","📑 PDF","📌 PPT"])
     with t1:
         st.caption("인사이트 + 뇌 에이전트 전략 + 결과 — 스타일드 Excel")
         if all_results:
@@ -1119,6 +1264,38 @@ elif st.session_state.phase == "results":
             },ensure_ascii=False,indent=2).encode("utf-8")
             st.download_button("⬇ JSON 다운로드",data=j,
                 file_name=f"{filename}.json",mime="application/json",use_container_width=True)
+
+    with t4:
+        if not _PDF_OK:
+            st.warning("PDF 라이브러리 미설치 (pip install reportlab)")
+        else:
+            grok_sig = st.session_state.get("grok_signal","")
+            st.caption("한글 PDF — 인사이트 + Grok 신호 + 뇌 에이전트 + 사이트 목록")
+            if st.button("PDF 생성 및 다운로드", use_container_width=True, key="pdf_btn"):
+                with st.spinner("PDF 생성 중..."):
+                    pdf_bytes = make_pdf_bytes(all_results, config, research_type, insights, brain_result, grok_sig)
+                if pdf_bytes:
+                    st.download_button("⬇ PDF 저장", data=pdf_bytes,
+                        file_name=f"{filename}.pdf", mime="application/pdf",
+                        use_container_width=True)
+                else:
+                    st.error("PDF 생성 실패")
+    with t5:
+        if not _PPT_OK:
+            st.warning("PPT 라이브러리 미설치 (pip install python-pptx)")
+        else:
+            grok_sig = st.session_state.get("grok_signal","")
+            st.caption("16:9 슬라이드 — 표지 + 인사이트 + 뇌 에이전트 + 사이트 목록")
+            if st.button("PPT 생성 및 다운로드", use_container_width=True, key="ppt_btn"):
+                with st.spinner("PPT 생성 중..."):
+                    pptx_bytes = make_pptx_bytes(all_results, config, research_type, insights, brain_result, grok_sig)
+                if pptx_bytes:
+                    st.download_button("⬇ PPT 저장", data=pptx_bytes,
+                        file_name=f"{filename}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True)
+                else:
+                    st.error("PPT 생성 실패")
 
     # ── 진짜 맞춤형 피드백 ──────────────────────────
     st.markdown("---")

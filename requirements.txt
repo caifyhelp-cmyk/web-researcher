@@ -7,3 +7,7 @@ requests>=2.31.0
 beautifulsoup4>=4.12.0
 openpyxl>=3.1.0
 pandas>=2.0.0
+
+duckduckgo-search>=6.2.0
+reportlab>=4.2.0
+python-pptx>=0.6.23
