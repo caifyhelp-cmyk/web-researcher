@@ -34,6 +34,11 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from openai import OpenAI
 
+try:
+    import _local_keys  # noqa — 로컬 설치 시 API 키 자동 주입
+except ImportError:
+    pass
+
 # ──────────────────────────────────────────────
 #  설정
 # ──────────────────────────────────────────────

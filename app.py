@@ -33,6 +33,11 @@ from openpyxl.utils import get_column_letter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+try:
+    import _local_keys  # noqa — 로컬 설치 시 API 키 자동 주입
+except ImportError:
+    pass
+
 from openai import OpenAI
 from anthropic import Anthropic
 from web_researcher import (
