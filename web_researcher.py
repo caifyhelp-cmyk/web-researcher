@@ -37,7 +37,9 @@ from openai import OpenAI
 # ──────────────────────────────────────────────
 #  설정
 # ──────────────────────────────────────────────
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
+NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
 NAVER_DELAY = 2.0
 GOOGLE_DELAY = 2.5
 SELENIUM_DELAY = 3.0
@@ -259,33 +261,73 @@ C) 특정 정보·데이터 수집 (예: "대학 안전팀 연락처", "최신 �
 #  멀티엔진 검색
 # ══════════════════════════════════════════════
 
-def search_naver(query, max_pages=2):
+def search_naver(query, max_results=30):
+    """네이버 공식 검색 API (클라우드 IP 차단 없음)"""
+    results, seen = [], set()
+    if not NAVER_CLIENT_ID:
+        # API 키 없으면 기존 스크래핑 방식 시도
+        return _search_naver_scrape(query)
+    try:
+        for start in range(1, max_results + 1, 10):
+            resp = requests.get(
+                'https://openapi.naver.com/v1/search/webkr.json',
+                headers={
+                    'X-Naver-Client-Id': NAVER_CLIENT_ID,
+                    'X-Naver-Client-Secret': NAVER_CLIENT_SECRET,
+                },
+                params={'query': query, 'display': 10, 'start': start, 'sort': 'sim'},
+                timeout=8
+            )
+            if resp.status_code != 200:
+                break
+            items = resp.json().get('items', [])
+            if not items:
+                break
+            for item in items:
+                url = item.get('link', '')
+                title = re.sub(r'<[^>]+>', '', item.get('title', ''))
+                if not url.startswith('http'):
+                    continue
+                domain = urlparse(url).netloc.lower()
+                if domain in seen:
+                    continue
+                seen.add(domain)
+                results.append({'url': url, 'title': title, 'domain': domain, 'source': 'naver_api'})
+            if len(results) >= max_results:
+                break
+            time.sleep(0.3)
+    except Exception as e:
+        print(f'    [!] Naver API 오류: {e}')
+    return results
+
+
+def _search_naver_scrape(query, max_pages=2):
+    """Naver API 없을 때 스크래핑 폴백"""
     results, seen = [], set()
     for page in range(1, max_pages + 1):
         try:
             resp = requests.get(
-                f"https://search.naver.com/search.naver?query={quote(query)}&where=web&start={(page-1)*10+1}",
+                f'https://search.naver.com/search.naver?query={quote(query)}&where=web&start={(page-1)*10+1}',
                 headers=NAVER_HEADERS, timeout=8
             )
-            soup = BeautifulSoup(resp.content.decode("utf-8", errors="replace"), "html.parser")
+            soup = BeautifulSoup(resp.content.decode('utf-8', errors='replace'), 'html.parser')
         except Exception:
             break
-
-        blocks = (soup.select(".total_wrap") or soup.select(".lst_total li")
-                  or soup.select("[data-cr-id]") or [soup])
+        blocks = (soup.select('.total_wrap') or soup.select('.lst_total li')
+                  or soup.select('[data-cr-id]') or [soup])
         for block in blocks:
-            for a in block.select("a[href]"):
-                href = a.get("href", "")
-                if "url=" in href and "naver" in href:
+            for a in block.select('a[href]'):
+                href = a.get('href', '')
+                if 'url=' in href and 'naver' in href:
                     m = re.search(r'url=([^&]+)', href)
                     if m: href = unquote(m.group(1))
-                if not href.startswith("http"): continue
+                if not href.startswith('http'): continue
                 domain = urlparse(href).netloc.lower()
                 if domain in seen: continue
                 title = a.get_text(strip=True) or domain
                 if len(title) < 2: continue
                 seen.add(domain)
-                results.append({"url": href, "title": title, "domain": domain, "source": "naver"})
+                results.append({'url': href, 'title': title, 'domain': domain, 'source': 'naver'})
         time.sleep(NAVER_DELAY)
     return results
 
