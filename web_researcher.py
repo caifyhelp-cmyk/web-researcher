@@ -579,33 +579,64 @@ def discover_internal_pages(driver, base_url, config, client, max_pages=10):
 #  Selenium
 # ══════════════════════════════════════════════
 
+def _scrape_requests(url: str) -> dict:
+    """Chrome 없는 서버 환경용 requests + BS4 폴백 스크래퍼"""
+    try:
+        resp = requests.get(url, headers=NAVER_HEADERS, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        title = soup.title.string.strip() if soup.title else ""
+        text  = " ".join(soup.get_text(" ", strip=True).split())[:4000]
+        return {"url": url, "page_title": title, "full_text": text,
+                "meta_desc": "", "h1": "", "error": False}
+    except Exception as e:
+        return {"url": url, "page_title": "", "full_text": "",
+                "error": True, "error_msg": str(e)}
+
+
+_CHROME_OK = None
+
 def make_driver():
-    import platform
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
-    if platform.system() == "Linux":
-        # 서버 환경 (Render) — 시스템 Chromium 사용
-        chrome_bin = os.getenv("CHROME_BIN", "/usr/bin/chromium")
-        driver_bin = os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver")
-        opts.binary_location = chrome_bin
-        service = Service(driver_bin)
-    else:
-        # 로컬 Windows — webdriver_manager 자동 다운로드
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
-        service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
-    driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-    return driver
+    """Chrome 사용 가능하면 Selenium driver 반환, 없으면 None (requests 모드)"""
+    global _CHROME_OK
+    if _CHROME_OK is False:
+        return None
+    import platform, shutil
+    try:
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+        if platform.system() == "Linux":
+            chrome = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+            cdriver = shutil.which("chromedriver")
+            if not chrome or not cdriver:
+                print("[서버] Chrome 없음 — requests 모드로 실행")
+                _CHROME_OK = False
+                return None
+            opts.binary_location = chrome
+            service = Service(cdriver)
+        else:
+            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+            opts.add_experimental_option("useAutomationExtension", False)
+            service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=opts)
+        driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        _CHROME_OK = True
+        return driver
+    except Exception as e:
+        print(f"[Chrome 오류] {e} — requests 모드 전환")
+        _CHROME_OK = False
+        return None
 
 
 def validate_domain(url):
@@ -630,6 +661,8 @@ def is_login_wall(page_data):
 
 
 def scrape_page(driver, url):
+    if driver is None:
+        return _scrape_requests(url)
     empty = {"page_title": "", "headings": "", "full_text": "", "error": ""}
     try:
         driver.get(url)
