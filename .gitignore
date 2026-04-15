@@ -6,3 +6,6 @@ data/
 sim.py
 chromedriver*
 .DS_Store
+_local_keys.py
+installer/app_data/_local_keys.py
+installer/app_data/app.py
