@@ -55,6 +55,52 @@ DATA_DIR   = os.path.join(BASE_DIR, "data")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ─────────────────────────────────────────────
+#  GitHub 영구 저장소 (재시작해도 데이터 유지)
+# ─────────────────────────────────────────────
+import base64
+
+_GH_TOKEN = os.getenv("GITHUB_DATA_TOKEN", "")
+_GH_REPO  = "caifyhelp-cmyk/web-researcher-data"
+_GH_API   = "https://api.github.com"
+_GH_HEADS = lambda: {
+    "Authorization": f"token {_GH_TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "Content-Type": "application/json",
+}
+
+def _gh_read(path: str):
+    """GitHub에서 JSON 파일 읽기. (dict, sha) 반환"""
+    if not _GH_TOKEN:
+        return {}, None
+    try:
+        r = http_req.get(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                         headers=_GH_HEADS(), timeout=10)
+        if r.status_code == 404:
+            return {}, None
+        data = r.json()
+        content = json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+        return content, data["sha"]
+    except Exception:
+        return {}, None
+
+def _gh_write(path: str, content: dict, sha=None, msg="update"):
+    """GitHub에 JSON 파일 쓰기"""
+    if not _GH_TOKEN:
+        return False
+    try:
+        encoded = base64.b64encode(json.dumps(content, ensure_ascii=False, indent=2).encode("utf-8")).decode()
+        body = {"message": msg, "content": encoded}
+        if sha:
+            body["sha"] = sha
+        r = http_req.put(f"{_GH_API}/repos/{_GH_REPO}/contents/{path}",
+                         headers=_GH_HEADS(), json=body, timeout=15)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+
 MARKETING_KW = [
     "랜딩","광고","마케팅","전환","경쟁사","cpc","seo","콘텐츠","sns",
     "유튜브","쇼츠","브랜딩","캠페인","리드","퍼널","전략","홍보",
@@ -149,9 +195,16 @@ def _verify_pw(pw, stored):
         return False
 
 def load_users():
+    if _GH_TOKEN:
+        data, _ = _gh_read("users.json")
+        return data
     return json.load(open(USERS_FILE, encoding="utf-8")) if os.path.exists(USERS_FILE) else {}
 
 def save_users(u):
+    if _GH_TOKEN:
+        _, sha = _gh_read("users.json")
+        _gh_write("users.json", u, sha, "save users")
+        return
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(u, f, ensure_ascii=False, indent=2)
 
@@ -179,208 +232,44 @@ def user_dir(username):
     return d
 
 def load_profile(username) -> dict:
-    """
-    profile.json 구조:
-    {
-      "system_prompt": "LLM 모든 호출에 주입되는 이 사용자의 특성 설명",
-      "rules": {
-        "force_strict_filter": "high/medium/low/null",
-        "min_count": 숫자,
-        "count_multiplier": 1.0~3.0,
-        "exclude_blogs": true/false,
-        "force_official_only": true/false,
-        "extra_excluded_domains": [...],
-        "preferred_domains": [...],
-        "query_style": "설명"
-      },
-      "feedback_history": [{"timestamp","raw","changes_summary"}]
-    }
-    """
-    p = os.path.join(user_dir(username), "profile.json")
+    if _GH_TOKEN:
+        data, _ = _gh_read(f"profiles/{username}.json")
+        return data if data else {"system_prompt": "", "rules": {}, "history": []}
+    d = os.path.join(DATA_DIR, username)
+    p = os.path.join(d, "profile.json")
     if os.path.exists(p):
-        return json.load(open(p, encoding="utf-8"))
-    return {"system_prompt": "", "rules": {}, "feedback_history": []}
-
+        try:
+            return json.load(open(p, encoding="utf-8"))
+        except Exception:
+            pass
+    return {"system_prompt": "", "rules": {}, "history": []}
 def save_profile(username, profile):
-    p = os.path.join(user_dir(username), "profile.json")
-    with open(p, "w", encoding="utf-8") as f:
+    if _GH_TOKEN:
+        _, sha = _gh_read(f"profiles/{username}.json")
+        _gh_write(f"profiles/{username}.json", profile, sha, f"save profile {username}")
+        return
+    d = os.path.join(DATA_DIR, username)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "profile.json"), "w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=2)
 
-def load_history(username):
-    p = os.path.join(user_dir(username), "history.json")
-    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
 
 def save_history(username, entry):
-    h = load_history(username)[:49]
-    h.insert(0, entry)
-    with open(os.path.join(user_dir(username), "history.json"), "w", encoding="utf-8") as f:
-        json.dump(h, f, ensure_ascii=False, indent=2)
-
-def process_feedback(username: str, feedback_text: str) -> dict:
-    """
-    피드백 → 타입 분류 → 타입별 처리
-    - search_rule: 검색 규칙 추출 + system_prompt 업데이트
-    - insight_quality: system_prompt만 업데이트 (rules 건드리지 않음)
-    - output_format: system_prompt에 포맷 지침만 추가
-    - irrelevant: 저장만 하고 아무것도 바꾸지 않음
-    """
-    profile = load_profile(username)
-    current_rules  = json.dumps(profile.get("rules", {}), ensure_ascii=False)
-    current_prompt = profile.get("system_prompt", "(없음)")
-
-    # Step 1: 피드백 타입 분류
-    classify_prompt = f"""이 웹리서치 도구의 사용자 피드백을 분류하세요.
-
-피드백: "{feedback_text}"
-
-분류 기준:
-- search_rule: 어떤 사이트를 찾아야 하는지, 검색 범위, 수량, 출처 유형에 관한 요청
-  예) "블로그 빼줘", "결과 더 많이", "공식 사이트만", "네이버 블로그 제외"
-- insight_quality: 분석의 깊이, 방향, 관점에 관한 요청  
-  예) "더 깊이 분석해줘", "뻔한 얘기 말고", "실무적으로", "우리 업종 특성 반영해줘"
-- output_format: 결과물 형식에 관한 요청
-  예) "bullet로 써줘", "짧게", "표 형식으로", "영어로"
-- irrelevant: 리서치 도구와 무관한 내용 (잡담, UI 요청, 날씨 등)
-
-JSON만 반환:
-{{"type": "search_rule 또는 insight_quality 또는 output_format 또는 irrelevant"}}"""
-
-    try:
-        r0 = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=50,
-            messages=[{"role": "user", "content": classify_prompt}],
-        )
-        t0 = r0.content[0].text.strip()
-        m0 = re.search(r'"type"\s*:\s*"(\w+)"', t0)
-        fb_type = m0.group(1) if m0 else "insight_quality"
-    except Exception:
-        fb_type = "insight_quality"
-
-    # irrelevant면 저장만 하고 끝
-    if fb_type == "irrelevant":
-        profile["feedback_history"].insert(0, {
-            "timestamp":       datetime.now().isoformat(),
-            "raw":             feedback_text,
-            "changes_summary": "리서치 도구와 무관한 피드백 — 설정 변경 없음",
-            "changes":         [],
-        })
-        profile["feedback_history"] = profile["feedback_history"][:30]
-        save_profile(username, profile)
-        return {"changes": [], "changes_summary": "리서치와 무관한 피드백 (설정 변경 없음)", "fb_type": fb_type}
-
-    # Step 2: 타입별 처리 프롬프트
-    if fb_type == "search_rule":
-        prompt = f"""웹리서치 도구의 검색 설정을 조정해야 합니다.
-
-사용자 피드백: "{feedback_text}"
-현재 규칙: {current_rules}
-현재 시스템 프롬프트: {current_prompt}
-
-이 도구는 한국 마케터/기획자가 쓰는 국내 웹 리서치 도구입니다.
-주 검색엔진: 네이버, 구글 (naver.com, google.com은 절대 차단 금지)
-
-규칙 추출 원칙:
-- extra_excluded_domains: 실제 존재하는 정확한 도메인만 (blog.naver.com, tistory.com 등)
-  와일드카드(*) 사용 금지. TLD(edu, org) 단독 사용 금지
-- preferred_domains: 실제 존재하는 한국 웹사이트 도메인만 (naver.com, moel.go.kr 등)
-  영문 학술지(arxiv, jstor, nature.com)는 한국 실무 리서치에 부적합하므로 추가 금지
-- min_count: 명시적으로 수량 언급된 경우만. "부족하다" 정도면 null
-- count_multiplier: 명시적 수량 요청 없으면 1.0 유지
-- force_official_only: "공식", "기관", "협회" 등 명시된 경우만 true
-
-JSON만 반환:
-{{
-  "system_prompt": "이 사용자는 ... (현재 프롬프트를 보완/수정, 2~4문장)",
-  "rules": {{
-    "force_strict_filter": null,
-    "min_count": null,
-    "count_multiplier": 1.0,
-    "exclude_blogs": false,
-    "force_official_only": false,
-    "extra_excluded_domains": [],
-    "preferred_domains": [],
-    "query_style": null
-  }},
-  "changes": ["구체적 변경 사항"],
-  "changes_summary": "한 줄 요약"
-}}"""
-
-    elif fb_type == "insight_quality":
-        prompt = f"""웹리서치 도구가 생성하는 인사이트 분석의 방향/깊이/관점을 조정합니다.
-
-사용자 피드백: "{feedback_text}"
-현재 시스템 프롬프트: {current_prompt}
-
-이 피드백은 검색 규칙이 아닌 분석 품질에 관한 것입니다.
-rules는 현재 값 그대로 유지하고, system_prompt만 이 피드백을 반영하여 재작성하세요.
-(system_prompt는 분석 LLM이 읽는 지침 — 이 사용자에게 어떤 방식으로 분석해야 하는지)
-
-JSON만 반환:
-{{
-  "system_prompt": "이 사용자는 ... (피드백 반영해서 재작성, 2~4문장)",
-  "rules": {current_rules},
-  "changes": ["분석 방향 변경 설명"],
-  "changes_summary": "한 줄 요약"
-}}"""
-
-    else:  # output_format
-        prompt = f"""웹리서치 결과물의 출력 형식을 조정합니다.
-
-사용자 피드백: "{feedback_text}"
-현재 시스템 프롬프트: {current_prompt}
-
-이 피드백은 결과물 포맷에 관한 것입니다.
-rules는 그대로 유지. system_prompt에 포맷 지침을 추가/수정하세요.
-
-JSON만 반환:
-{{
-  "system_prompt": "이 사용자는 ... (포맷 지침 포함해서 재작성)",
-  "rules": {current_rules},
-  "changes": ["포맷 변경 설명"],
-  "changes_summary": "한 줄 요약"
-}}"""
-
-    try:
-        resp = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=700,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text.strip()
-        m = re.search(r'\{[\s\S]+\}', text)
-        if m:
-            result = json.loads(m.group())
-            result["fb_type"] = fb_type
-
-            profile["system_prompt"] = result.get("system_prompt", current_prompt)
-            if fb_type == "search_rule":
-                new_rules = result.get("rules", {})
-                # 안전장치: naver.com, google.com은 절대 차단 안 됨
-                excluded = new_rules.get("extra_excluded_domains", [])
-                excluded = [d for d in excluded if not any(
-                    safe in d for safe in ["naver.com", "google.com", "daum.net"]
-                ) or d in ["blog.naver.com", "cafe.naver.com"]]
-                new_rules["extra_excluded_domains"] = excluded
-                # 가짜 도메인 필터: TLD 단독, 비도메인 패턴 제거
-                pref = new_rules.get("preferred_domains", [])
-                pref = [d for d in pref if "." in d and not d.startswith("*")
-                        and len(d) > 4 and "/" not in d]
-                new_rules["preferred_domains"] = pref
-                profile["rules"] = new_rules
-
-            profile["feedback_history"].insert(0, {
-                "timestamp":       datetime.now().isoformat(),
-                "raw":             feedback_text,
-                "changes_summary": result.get("changes_summary", ""),
-                "changes":         result.get("changes", []),
-            })
-            profile["feedback_history"] = profile["feedback_history"][:30]
-            save_profile(username, profile)
-            return result
-    except Exception as e:
-        print(f"[피드백 처리] {e}")
-    return {"changes": [], "changes_summary": "처리 실패"}
+    if _GH_TOKEN:
+        hist, sha = _gh_read(f"history/{username}.json")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(entry)
+        hist = hist[-50:]
+        _gh_write(f"history/{username}.json", hist, sha, f"history {username}")
+        return
+    d = os.path.join(DATA_DIR, username)
+    os.makedirs(d, exist_ok=True)
+    hf = os.path.join(d, "history.json")
+    hist = json.load(open(hf, encoding="utf-8")) if os.path.exists(hf) else []
+    hist.append(entry)
+    with open(hf, "w", encoding="utf-8") as f:
+        json.dump(hist[-50:], f, ensure_ascii=False, indent=2)
 
 
 def apply_user_rules(config: dict, plan: dict, rules: dict) -> tuple:
