@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -938,6 +938,13 @@ def main():
         if not topic or topic.lower() == "q":
             console.print("\n[dim]프로그램을 종료합니다.[/dim]")
             break
+
+        # 입력값 검증 — 너무 짧거나 의미 없는 입력 차단
+        meaningful = len(re.findall(r'[가-힣a-zA-Z]', topic))
+        if len(topic) < 4 or meaningful < 2:
+            console.print("[yellow]⚠  조사 주제를 좀 더 구체적으로 입력해주세요.[/yellow]")
+            console.print("[dim]예) 안전보건 교육 경쟁사  /  AI 마케팅 트렌드  /  삼성전자 분석[/dim]")
+            continue
 
         console.print()
         console.print("[bold]조사 깊이:[/bold]  [cyan]1[/cyan] 빠른(3분)  [cyan]2[/cyan] 보통(7분)  [cyan]3[/cyan] 심층(15분)")
