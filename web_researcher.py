@@ -70,12 +70,20 @@ GOOGLE_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# 절대 제외 (포털·SNS·위키 — 어떤 조사에도 의미 없음)
+# 절대 제외 (포털·SNS·위키·뉴스 — 어떤 조사에도 의미 없음)
 HARD_EXCLUDE = [
     "naver.com", "navercorp.com", "google.com", "daum.net", "bing.com", "kakao.com",
     "youtube.com", "youtu.be",
     "instagram.com", "facebook.com", "twitter.com", "x.com", "linkedin.com",
     "namu.wiki", "wikipedia.org",
+    # 뉴스·언론
+    "news.naver.com", "news.daum.net", "chosun.com", "joongang.co.kr", "donga.com",
+    "hani.co.kr", "khan.co.kr", "mk.co.kr", "hankyung.com", "sedaily.com",
+    "etnews.com", "zdnet.co.kr", "bloter.net", "ajunews.com", "idomin.com",
+    "newsis.com", "yonhapnews.co.kr", "yna.co.kr", "news1.kr", "ohmynews.com",
+    "pressian.com", "mediatoday.co.kr",
+    # 공공데이터·정부부처
+    "data.go.kr", "moel.go.kr", "mois.go.kr", "go.kr",
 ]
 
 # 블로그·콘텐츠 플랫폼 — strict_filter=high/medium 일 때 추가 차단
@@ -690,11 +698,17 @@ def _scrape_requests(url: str) -> dict:
             tag.decompose()
         title = soup.title.string.strip() if soup.title else ""
         text  = " ".join(soup.get_text(" ", strip=True).split())[:4000]
+        headings = [
+            f"[{t.name.upper()}] {t.get_text(strip=True)}"
+            for t in soup.find_all(["h1","h2","h3"])[:25]
+            if t.get_text(strip=True)
+        ]
         return {"url": url, "page_title": title, "full_text": text,
+                "headings": "\n".join(headings),
                 "meta_desc": "", "h1": "", "error": False}
     except Exception as e:
         return {"url": url, "page_title": "", "full_text": "",
-                "error": True, "error_msg": str(e)}
+                "headings": "", "error": True, "error_msg": str(e)}
 
 
 _CHROME_OK = None

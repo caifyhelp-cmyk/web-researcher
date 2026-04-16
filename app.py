@@ -178,10 +178,16 @@ st.markdown("""
 # ─────────────────────────────────────────────
 #  클라이언트
 # ─────────────────────────────────────────────
-oai_client = OpenAI(api_key=OPENAI_API_KEY)
-claude      = Anthropic(api_key=ANTHROPIC_API_KEY)
-deepseek    = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-grok        = OpenAI(api_key=GROK_API_KEY,     base_url="https://api.x.ai/v1")
+@st.cache_resource
+def _get_clients():
+    return (
+        OpenAI(api_key=OPENAI_API_KEY),
+        Anthropic(api_key=ANTHROPIC_API_KEY),
+        OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com"),
+        OpenAI(api_key=GROK_API_KEY,     base_url="https://api.x.ai/v1"),
+    )
+
+oai_client, claude, deepseek, grok = _get_clients()
 
 # ─────────────────────────────────────────────
 #  인증
@@ -199,7 +205,7 @@ def _verify_pw(pw, stored):
     except Exception:
         return False
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_users():
     if _GH_TOKEN:
         data, _ = _gh_read("users.json")
@@ -238,7 +244,7 @@ def user_dir(username):
     os.makedirs(d, exist_ok=True)
     return d
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_profile(username) -> dict:
     if _GH_TOKEN:
         data, _ = _gh_read(f"profiles/{username}.json")
@@ -263,7 +269,7 @@ def save_profile(username, profile):
         json.dump(profile, f, ensure_ascii=False, indent=2)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_history(username) -> list:
     if _GH_TOKEN:
         hist, _ = _gh_read(f"history/{username}.json")
