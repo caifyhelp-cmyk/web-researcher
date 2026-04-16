@@ -221,8 +221,8 @@ JSON만 답하세요:
         "summary": topic, "keywords": [topic],
         "queries": [topic, f"{topic} 비교", f"{topic} 업체", f"{topic} 현황", f"{topic} 사례"],
         "needs": ["업체명", "주요서비스", "가격정책", "고객후기", "연락처"],
-        "focus_points": ["주요 현황", "서비스 분析", "시장 트렌드"],
-        "analysis_angle": "종합 전략 분析"
+        "focus_points": ["주요 현황", "서비스 분석", "시장 트렌드"],
+        "analysis_angle": "종합 전략 분석"
     }
 
 # ═══════════════════════════════════════════════════════
@@ -507,7 +507,7 @@ def _analyze_url(r: dict, topic: str, needs: list) -> dict:
     if not oai:
         return {"한줄요약": "", **{n: "" for n in needs}}
     needs_str = "\n".join(f'  "{n}": ""' for n in needs)
-    prompt = f"""웹 리서치 전문가로서 아래 페이지를 분析해주세요.
+    prompt = f"""웹 리서치 전문가로서 아래 페이지를 분석해주세요.
 
 [조사 주제]: {topic}
 [URL]: {r.get('url','')}
@@ -533,10 +533,10 @@ JSON만:
             return json.loads(m.group())
     except Exception as e:
         console.print(f"[red]GPT 추출 오류: {e}[/red]")
-    return {"한줄요약": "분析 실패", **{n: "" for n in needs}}
+    return {"한줄요약": "분석 실패", **{n: "" for n in needs}}
 
 # ═══════════════════════════════════════════════════════
-#  AI 분析
+#  AI 분석
 # ═══════════════════════════════════════════════════════
 def analyze(topic: str, plan: dict, results: list) -> dict:
     if not results:
@@ -553,12 +553,12 @@ def analyze(topic: str, plan: dict, results: list) -> dict:
         TextColumn("[progress.description]{task.description}"),
         console=console, transient=True
     ) as prog:
-        t = prog.add_task("[cyan]URL별 GPT 분析 중...", total=len(results))
+        t = prog.add_task("[cyan]URL별 GPT 분석 중...", total=len(results))
         for r in results:
             gpt = _analyze_url(r, topic, needs)
             values = [v for k, v in gpt.items() if k != "한줄요약"]
-            unconfirmed = sum(1 for v in values if str(v).strip() in ("확인 불가", "", "분析 실패"))
-            if gpt.get("한줄요약") in ("분析 실패", "확인 불가") or unconfirmed >= len(values) * 0.5:
+            unconfirmed = sum(1 for v in values if str(v).strip() in ("확인 불가", "", "분석 실패"))
+            if gpt.get("한줄요약") in ("분석 실패", "확인 불가") or unconfirmed >= len(values) * 0.5:
                 prog.advance(t)
                 continue
             per_url.append({**r, "gpt": gpt})
@@ -571,14 +571,14 @@ def analyze(topic: str, plan: dict, results: list) -> dict:
 
     gpt_out = call_gpt(
         f"리서치 주제: {topic}\n\n수집 데이터:\n{ctx}\n\n"
-        f"핵심 분析, 주요 플레이어, 시장 현황, 시사점을 한국어로 작성하세요.",
+        f"핵심 분석, 주요 플레이어, 시장 현황, 시사점을 한국어로 작성하세요.",
         system="당신은 시니어 마케팅 리서치 애널리스트입니다. 핵심만 간결하게.",
         model="gpt-4o"
     )
 
     # 뇌 에이전트 인사이트 (연동 가능 시)
     brain_out = ""
-    with console.status("[dim]뇌 에이전트 분析 중...[/dim]"):
+    with console.status("[dim]뇌 에이전트 분석 중...[/dim]"):
         brain_situation = (
             f"리서치 주제: {topic}\n"
             f"조사 유형: {plan.get('research_type', 'general')}\n"
@@ -589,13 +589,13 @@ def analyze(topic: str, plan: dict, results: list) -> dict:
     # 뇌 에이전트 없으면 Claude로 대체
     if brain_out:
         claude_out = call_claude(
-            f"주제: {topic}\n\nGPT 분析:\n{gpt_out}\n\n뇌 에이전트 판단:\n{brain_out}\n\n"
+            f"주제: {topic}\n\nGPT 분석:\n{gpt_out}\n\n뇌 에이전트 판단:\n{brain_out}\n\n"
             f"위 내용을 종합해 실행 가능한 전략 액션 5개를 번호 목록으로 제시하세요.",
             system="마케팅 전략 전문가로서 실용적인 인사이트를 제공하세요."
         )
     else:
         claude_out = call_claude(
-            f"주제: {topic}\n\nGPT 분析 결과:\n{gpt_out}\n\n"
+            f"주제: {topic}\n\nGPT 분석 결과:\n{gpt_out}\n\n"
             f"전략적 시사점과 실행 가능한 액션 아이템 5개를 번호 목록으로 제시하세요.",
             system="마케팅 전략 전문가로서 실용적인 인사이트를 제공하세요."
         )
@@ -619,13 +619,13 @@ def display_results(topic: str, plan: dict, analysis: dict):
 
     rtype = plan.get("research_type", "general")
     fmode = plan.get("filter_mode", "medium")
-    type_label   = {"competitor":"경쟁사 조사","news":"뉴스·트렌드","institution":"기관 분析","general":"일반 조사"}.get(rtype, rtype)
+    type_label   = {"competitor":"경쟁사 조사","news":"뉴스·트렌드","institution":"기관 분석","general":"일반 조사"}.get(rtype, rtype)
     filter_label = {"strict":"엄격","medium":"보통","loose":"느슨"}.get(fmode, fmode)
 
     console.print(Panel(
         f"[bold]요약[/bold]  {plan.get('summary', topic)}\n"
         f"[bold]유형[/bold]  {type_label}  |  [bold]필터[/bold]  {filter_label}\n"
-        f"[bold]수집[/bold]  {analysis['source_count']}개  →  분析 완료 {len(analysis['per_url'])}개\n"
+        f"[bold]수집[/bold]  {analysis['source_count']}개  →  분석 완료 {len(analysis['per_url'])}개\n"
         f"[bold]방향[/bold]  {plan.get('analysis_angle','')}",
         title="[bold]개요[/bold]", border_style="blue", padding=(0,2)
     ))
@@ -642,7 +642,7 @@ def display_results(topic: str, plan: dict, analysis: dict):
         console.print()
         console.print(Panel(
             analysis["gpt_analysis"],
-            title="[bold]GPT-4o 시장 분析[/bold]",
+            title="[bold]GPT-4o 시장 분석[/bold]",
             border_style="green", padding=(1,2)
         ))
 
@@ -762,7 +762,7 @@ def _save_excel(base, topic, analysis, results):
 
         ws.freeze_panes = "B3"
 
-        ws2 = wb.create_sheet("종합 분析")
+        ws2 = wb.create_sheet("종합 분석")
         ws2.column_dimensions["A"].width = 20
         ws2.column_dimensions["B"].width = 90
 
@@ -775,7 +775,7 @@ def _save_excel(base, topic, analysis, results):
 
         r2(1, "리서치 주제",    topic)
         r2(2, "뇌 에이전트",   analysis.get("brain_insights","(미연동)"))
-        r2(3, "GPT-4o 분析",   analysis.get("gpt_analysis",""))
+        r2(3, "GPT-4o 분석",   analysis.get("gpt_analysis",""))
         r2(4, "전략 인사이트", analysis.get("claude_insights",""))
 
         wb.save(path)
@@ -795,7 +795,7 @@ def _save_pdf(base, topic, analysis):
             story.append(Paragraph("뇌 에이전트 판단", kh))
             for ln in analysis["brain_insights"].split("\n"):
                 if ln.strip(): story.append(Paragraph(ln, ks))
-        story.append(Paragraph("GPT-4o 분析", kh))
+        story.append(Paragraph("GPT-4o 분석", kh))
         for ln in analysis.get("gpt_analysis","").split("\n"):
             if ln.strip(): story.append(Paragraph(ln, ks))
         story += [Spacer(1,10), Paragraph("전략 인사이트", kh)]
@@ -819,7 +819,7 @@ def _save_ppt(base, topic, analysis):
         sl0.placeholders[1].text = datetime.now().strftime("%Y-%m-%d")
         if analysis.get("brain_insights"):
             add_slide("뇌 에이전트 판단", analysis["brain_insights"][:900])
-        add_slide("GPT-4o 분析",   analysis.get("gpt_analysis","")[:900])
+        add_slide("GPT-4o 분석",   analysis.get("gpt_analysis","")[:900])
         add_slide("전략 인사이트", analysis.get("claude_insights","")[:900])
         prs.save(path)
         return path
@@ -848,7 +848,7 @@ def main():
         console.print()
         console.print(Rule(style="dim"))
         console.print("[bold]무엇을 조사할까요?[/bold]")
-        console.print("[dim]예) 관리감독자 교육 경쟁사  /  AI 마케팅 최신 트렌드  /  대한산업안전협회 분析[/dim]")
+        console.print("[dim]예) 관리감독자 교육 경쟁사  /  AI 마케팅 최신 트렌드  /  대한산업안전협회 분석[/dim]")
         console.print("[dim]종료: q[/dim]")
 
         topic = Prompt.ask("\n[bold cyan]→[/bold cyan]").strip()
@@ -893,10 +893,10 @@ def main():
         results = run_research(plan)
         console.print(f"[green]OK[/green] {len(results)}개 페이지 수집 완료")
 
-        # 3. 분析
-        console.print("[cyan]GPT 구조화 추출 + 종합 분析 중...[/cyan]")
+        # 3. 분석
+        console.print("[cyan]GPT 구조화 추출 + 종합 분석 중...[/cyan]")
         analysis = analyze(topic, plan, results)
-        console.print("[green]OK[/green] 분析 완료")
+        console.print("[green]OK[/green] 분석 완료")
 
         # 4. 출력
         display_results(topic, plan, analysis)
