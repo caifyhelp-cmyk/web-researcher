@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -846,6 +846,91 @@ def _save_ppt(base, topic, analysis):
         console.print(f"[red]PPT 오류: {e}[/red]")
 
 # ═══════════════════════════════════════════════════════
+#  인테이크 채팅 — GPT와 대화로 조사 주제 구체화
+# ═══════════════════════════════════════════════════════
+def intake_chat(first_input: str):
+    """GPT와 자연스러운 대화로 조사 주제와 깊이를 확정 후 (topic, depth) 반환"""
+    if not oai:
+        # API 없으면 입력값 그대로 사용
+        return first_input, "일반 조사"
+
+    system = """당신은 웹 리서치 어시스턴트의 접수 담당입니다.
+사용자가 조사를 요청하면 자연스러운 대화로 주제를 구체화하세요.
+
+규칙:
+1. 질문은 한 번에 하나씩만 하세요.
+2. 주제가 명확해지면 더 파고들지 말고 바로 확정하세요 (1~2번 대화면 충분).
+3. 주제가 확정되면 반드시 아래 JSON으로 응답하세요:
+{"ready": true, "topic": "확정된 조사 주제", "depth": "빠른 조사|일반 조사|심층 조사", "message": "사용자에게 보여줄 시작 멘트"}
+
+4. 아직 대화 중이면:
+{"ready": false, "message": "질문 또는 응답"}
+
+5. 사용자가 종료를 원하면:
+{"ready": false, "quit": true, "message": ""}
+
+주제 확정 기준: 업종/대상이 명확하고, 조사 목적이 파악되면 바로 확정.
+깊이 판단: 빠른=단순 궁금증, 일반=업무용, 심층=중요한 의사결정"""
+
+    history = [{"role": "user", "content": first_input}]
+
+    for _ in range(6):  # 최대 6턴
+        try:
+            resp = oai.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": system}] + history,
+                max_tokens=300, temperature=0.5
+            )
+            raw = resp.choices[0].message.content.strip()
+        except Exception:
+            return first_input, "일반 조사"
+
+        # JSON 파싱 시도
+        parsed = None
+        try:
+            m = re.search(r'\{[\s\S]+\}', raw)
+            if m:
+                parsed = json.loads(m.group())
+        except Exception:
+            pass
+
+        if not parsed:
+            # JSON 없으면 그냥 텍스트 출력 후 사용자 입력
+            console.print(f"\n[bold cyan]어시스턴트[/bold cyan]: {raw}")
+            user_in = Prompt.ask("[bold cyan]→[/bold cyan]").strip()
+            if not user_in or user_in.lower() == "q":
+                return None
+            history.append({"role": "assistant", "content": raw})
+            history.append({"role": "user", "content": user_in})
+            continue
+
+        if parsed.get("quit"):
+            return None
+
+        msg = parsed.get("message", "")
+
+        if parsed.get("ready"):
+            topic = parsed.get("topic", first_input)
+            depth = parsed.get("depth", "일반 조사")
+            if msg:
+                console.print(f"\n[bold cyan]어시스턴트[/bold cyan]: {msg}")
+            console.print()
+            return topic, depth
+        else:
+            # 아직 대화 중
+            if msg:
+                console.print(f"\n[bold cyan]어시스턴트[/bold cyan]: {msg}")
+            user_in = Prompt.ask("[bold cyan]→[/bold cyan]").strip()
+            if not user_in or user_in.lower() == "q":
+                return None
+            history.append({"role": "assistant", "content": raw})
+            history.append({"role": "user", "content": user_in})
+
+    # 6턴 초과 시 첫 입력 그대로 사용
+    return first_input, "일반 조사"
+
+
+# ═══════════════════════════════════════════════════════
 #  채팅 모드 — 리서치 결과 기반 대화
 # ═══════════════════════════════════════════════════════
 def chat_mode(topic: str, plan: dict, analysis: dict, results: list):
@@ -930,26 +1015,20 @@ def main():
     while True:
         console.print()
         console.print(Rule(style="dim"))
-        console.print("[bold]무엇을 조사할까요?[/bold]")
-        console.print("[dim]예) 관리감독자 교육 경쟁사  /  AI 마케팅 최신 트렌드  /  대한산업안전협회 분석[/dim]")
+        console.print("[bold]무엇이 궁금하세요?[/bold]")
+        console.print("[dim]자유롭게 말씀해 주세요. 대화하면서 조사 방향을 잡아드립니다.[/dim]")
         console.print("[dim]종료: q[/dim]")
 
-        topic = Prompt.ask("\n[bold cyan]→[/bold cyan]").strip()
-        if not topic or topic.lower() == "q":
+        first_input = Prompt.ask("\n[bold cyan]→[/bold cyan]").strip()
+        if not first_input or first_input.lower() == "q":
             console.print("\n[dim]프로그램을 종료합니다.[/dim]")
             break
 
-        # 입력값 검증 — 너무 짧거나 의미 없는 입력 차단
-        meaningful = len(re.findall(r'[가-힣a-zA-Z]', topic))
-        if len(topic) < 4 or meaningful < 2:
-            console.print("[yellow]⚠  조사 주제를 좀 더 구체적으로 입력해주세요.[/yellow]")
-            console.print("[dim]예) 안전보건 교육 경쟁사  /  AI 마케팅 트렌드  /  삼성전자 분석[/dim]")
+        # GPT 대화로 주제 구체화
+        result = intake_chat(first_input)
+        if not result:
             continue
-
-        console.print()
-        console.print("[bold]조사 깊이:[/bold]  [cyan]1[/cyan] 빠른(3분)  [cyan]2[/cyan] 보통(7분)  [cyan]3[/cyan] 심층(15분)")
-        dc    = Prompt.ask("선택", choices=["1","2","3"], default="2")
-        depth = {"1":"빠른 조사","2":"일반 조사","3":"심층 조사"}[dc]
+        topic, depth = result
 
         console.print()
         console.print(Rule("[cyan]리서치 시작[/cyan]", style="bright_blue"))
