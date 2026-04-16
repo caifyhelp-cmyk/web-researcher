@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.3.1"
+VERSION = "2.3.2"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -875,22 +875,29 @@ def intake_chat(first_input: str):
         return first_input, "일반 조사"
 
     system = """당신은 웹 리서치 어시스턴트의 접수 담당입니다.
-사용자가 조사를 요청하면 자연스러운 대화로 주제를 구체화하세요.
+사용자가 조사를 요청하면 자연스럽게 대화해서 주제를 구체화하세요.
 
-규칙:
-1. 질문은 한 번에 하나씩만 하세요.
-2. 주제가 명확해지면 더 파고들지 말고 바로 확정하세요 (1~2번 대화면 충분).
-3. 주제가 확정되면 반드시 아래 JSON으로 응답하세요:
-{"ready": true, "topic": "확정된 조사 주제", "depth": "빠른 조사|일반 조사|심층 조사", "message": "사용자에게 보여줄 시작 멘트"}
+중요 규칙:
+1. 반드시 JSON 형식으로만 응답하세요. 일반 텍스트 금지.
+2. 질문은 한 번에 하나만.
+3. 주제가 충분히 명확하면 (1~2턴이면 충분) 바로 확정.
+4. 조사와 무관한 잡담이면 친절하게 조사 주제로 유도.
 
-4. 아직 대화 중이면:
-{"ready": false, "message": "질문 또는 응답"}
+응답 형식:
 
-5. 사용자가 종료를 원하면:
+대화 중일 때:
+{"ready": false, "message": "여기에 실제 질문이나 안내 문구를 작성"}
+
+예시: {"ready": false, "message": "어떤 업종의 경쟁사를 조사할까요?"}
+예시: {"ready": false, "message": "안녕하세요! 어떤 주제를 조사해드릴까요?"}
+
+주제 확정됐을 때:
+{"ready": true, "topic": "확정된 조사 주제", "depth": "빠른 조사 또는 일반 조사 또는 심층 조사", "message": "네, [주제] 조사를 시작하겠습니다!"}
+
+종료 요청 시:
 {"ready": false, "quit": true, "message": ""}
 
-주제 확정 기준: 업종/대상이 명확하고, 조사 목적이 파악되면 바로 확정.
-깊이 판단: 빠른=단순 궁금증, 일반=업무용, 심층=중요한 의사결정"""
+깊이 기준: 빠른=가볍게 궁금한 것, 일반=업무용, 심층=중요한 의사결정"""
 
     history = [{"role": "user", "content": first_input}]
 
