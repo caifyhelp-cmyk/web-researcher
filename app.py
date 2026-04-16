@@ -446,6 +446,55 @@ def generate_insights(all_results: list, config: dict, username: str) -> str:
         return "인사이트 생성 실패"
 
 
+def process_feedback(username: str, feedback_text: str) -> dict:
+    """Claude Haiku로 피드백 분석 → 사용자 프로필 업데이트"""
+    profile = load_profile(username)
+    rules = profile.get("rules", {})
+
+    prompt = f"""사용자 피드백: "{feedback_text}"
+현재 규칙: {json.dumps(rules, ensure_ascii=False)}
+
+피드백에서 변경할 규칙을 추출하여 JSON으로 반환하세요.
+가능한 필드:
+- min_count: 최소 수집 개수 (숫자)
+- count_multiplier: 수량 배수 (1.0~3.0)
+- force_official_only: 공식 사이트만 (true/false)
+- exclude_blogs: 블로그 제외 (true/false)
+- force_strict_filter: 필터 강도 ("high"/"medium"/"low")
+- query_style: 쿼리 스타일 설명 (문자열)
+- extra_excluded_domains: 추가 제외 도메인 목록 (배열)
+- system_prompt: 이 사용자의 특성/선호도 요약 (1-2문장)
+
+변경이 필요한 필드만 포함. 형식:
+{{"rules": {{...}}, "system_prompt": "...", "changes": ["변경사항1", "변경사항2"]}}"""
+
+    try:
+        resp = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        m = re.search(r'\{[\s\S]+\}', resp.content[0].text)
+        if m:
+            result = json.loads(m.group())
+            rules.update(result.get("rules", {}))
+            profile["rules"] = rules
+            if result.get("system_prompt"):
+                profile["system_prompt"] = result["system_prompt"]
+            fb_history = profile.get("feedback_history", [])
+            fb_history.append({
+                "timestamp": datetime.now().isoformat(),
+                "feedback": feedback_text[:100],
+                "changes_summary": ", ".join(result.get("changes", []))[:80],
+            })
+            profile["feedback_history"] = fb_history[-10:]
+            save_profile(username, profile)
+            return result
+    except Exception as e:
+        print(f"[피드백] {e}")
+    return {"changes": []}
+
+
 def get_grok_realtime(config: dict, insights: str) -> str:
     """
     Grok (xAI grok-3) — 실시간 시장 신호 보완

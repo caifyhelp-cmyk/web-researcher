@@ -139,21 +139,27 @@ JSON 형식으로만 답하세요:
     }
 
 def _filter_relevant(candidates: list, topic: str, keywords: list) -> list:
-    """GPT로 관련없는 URL 제거"""
+    """GPT로 명백히 관련없는 URL만 제거 (보수적 필터)"""
     if not candidates or not oai:
         return candidates
     items = "\n".join(f"{i+1}. [{c.get('title','')}] {c.get('url','')}"
                       for i, c in enumerate(candidates))
     kw = ", ".join(keywords) if keywords else topic
     resp = call_gpt(
-        f"주제: {topic}\n핵심 키워드: {kw}\n\n아래 URL 목록 중 주제와 관련된 번호만 쉼표로 답하세요. 관련없으면 제외.\n\n{items}",
-        system="URL이 주제와 관련있는지 판단하는 필터입니다. 번호만 쉼표로 답하세요.",
+        f"주제: {topic}\n핵심 키워드: {kw}\n\n"
+        f"아래 URL 목록 중 주제와 **명백히 무관한** 번호만 쉼표로 답하세요.\n"
+        f"애매하면 포함. 정부기관·협회·교육기관은 관련 있으면 포함.\n"
+        f"뉴스포털·SNS·쇼핑몰·부동산·식품 등 완전히 다른 업종만 제거.\n\n{items}\n\n"
+        f"제거할 번호만 쉼표로 (없으면 '없음'):",
+        system="URL 관련성 판단기. 제거할 번호만 답하세요. 애매하면 포함.",
         model="gpt-4o-mini"
     )
     try:
-        nums = [int(x.strip()) - 1 for x in re.findall(r'\d+', resp)]
-        filtered = [candidates[i] for i in nums if 0 <= i < len(candidates)]
-        return filtered if filtered else candidates[:3]
+        if "없음" in resp or not re.search(r'\d', resp):
+            return candidates
+        remove_nums = {int(x.strip()) - 1 for x in re.findall(r'\d+', resp)}
+        filtered = [c for i, c in enumerate(candidates) if i not in remove_nums]
+        return filtered if filtered else candidates
     except Exception:
         return candidates
 
@@ -193,7 +199,8 @@ def _fetch_text(url: str, timeout: int = 8) -> str:
 # ═══════════════════════════════════════════════════════
 #  검색 + 스크랩
 # ═══════════════════════════════════════════════════════
-def run_research(plan: dict) -> list:
+def _collect_urls(queries: list, plan: dict, seen_urls: set, prog=None) -> list:
+    """쿼리 목록으로 URL 수집 (네이버 우선, DDG 보완)"""
     try:
         from web_researcher import search_naver, search_duckduckgo
     except ImportError:
@@ -202,10 +209,59 @@ def run_research(plan: dict) -> list:
 
     from urllib.parse import urlparse
     results = []
+    keywords = plan.get("keywords", [])
+
+    for q in queries:
+        task_id = prog.add_task(f"[cyan]검색: {q[:45]}", total=None) if prog else None
+        try:
+            naver = search_naver(q, max_results=10)
+
+            # DDG는 네이버 결과가 부족할 때만 보완 (3개 미만 시)
+            candidates = naver
+            if len(naver) < 3:
+                ddg = search_duckduckgo(q, max_results=8)
+                naver_urls = {n["url"] for n in naver}
+                candidates = naver + [d for d in ddg if d["url"] not in naver_urls]
+
+            candidates = _filter_relevant(candidates, q, keywords)
+
+            for item in candidates[:5]:
+                url   = item.get("url", "")
+                title = item.get("title", url)
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                if prog and task_id is not None:
+                    prog.update(task_id, description=f"[yellow]수집: {title[:40]}")
+                page = _fetch_page(url)
+                if page["text"] and len(page["text"]) > 150:
+                    domain = urlparse(url).netloc
+                    results.append({
+                        "query":      q,
+                        "url":        url,
+                        "title":      title,
+                        "domain":     domain,
+                        "content":    page["text"][:3000],
+                        "page_title": page["page_title"],
+                        "headings":   page["headings"],
+                        "error":      page["error"],
+                    })
+        except Exception:
+            pass
+        if prog and task_id is not None:
+            prog.remove_task(task_id)
+
+    return results
+
+
+def run_research(plan: dict) -> list:
+    from urllib.parse import urlparse
+    results = []
     seen_urls = set()
     queries = plan.get("queries", [])
     depth_n = {"빠른 조사": 3, "일반 조사": 5, "심층 조사": 8}
     max_q = depth_n.get(plan.get("_depth", "일반 조사"), 5)
+    target = {"빠른 조사": 5, "일반 조사": 10, "심층 조사": 18}.get(plan.get("_depth", "일반 조사"), 10)
 
     with Progress(
         SpinnerColumn(),
@@ -213,39 +269,32 @@ def run_research(plan: dict) -> list:
         TimeElapsedColumn(),
         console=console, transient=True
     ) as prog:
-        for q in queries[:max_q]:
-            t = prog.add_task(f"[cyan]검색: {q[:45]}", total=None)
+        results = _collect_urls(queries[:max_q], plan, seen_urls, prog)
+
+        # 자동 재시도: 목표의 70% 미달 시 추가 쿼리 생성
+        retry = 0
+        while len(results) < int(target * 0.7) and retry < 2:
+            retry += 1
+            collected_domains = [urlparse(r["url"]).netloc for r in results]
+            extra_prompt = f"""조사 목적: "{plan.get('summary', '')}"
+기존 수집 도메인: {collected_domains[:10]}
+아직 {target - len(results)}개가 더 필요합니다.
+
+규칙:
+- 실제 고객이 네이버/구글에 검색할 자연스러운 검색어
+- "분석", "최적화", "랜딩 페이지" 같은 마케터 용어 금지
+- 기존 도메인과 겹치지 않는 새로운 각도의 쿼리 3개
+
+JSON: {{"queries": ["q1", "q2", "q3"]}}"""
             try:
-                candidates = search_naver(q, max_results=8)
-                if not candidates:
-                    candidates = search_duckduckgo(q, max_results=8)
-
-                keywords = plan.get("keywords", [])
-                candidates = _filter_relevant(candidates, q, keywords)
-
-                for item in candidates[:4]:
-                    url   = item.get("url", "")
-                    title = item.get("title", url)
-                    if not url or url in seen_urls:
-                        continue
-                    seen_urls.add(url)
-                    prog.update(t, description=f"[yellow]수집: {title[:40]}")
-                    page = _fetch_page(url)
-                    if page["text"] and len(page["text"]) > 150:
-                        domain = urlparse(url).netloc
-                        results.append({
-                            "query":      q,
-                            "url":        url,
-                            "title":      title,
-                            "domain":     domain,
-                            "content":    page["text"][:3000],
-                            "page_title": page["page_title"],
-                            "headings":   page["headings"],
-                            "error":      page["error"],
-                        })
+                raw = call_gpt(extra_prompt, model="gpt-4o-mini")
+                m = re.search(r'\{[\s\S]+\}', raw)
+                if m:
+                    extra_queries = json.loads(m.group()).get("queries", [])
+                    extra = _collect_urls(extra_queries, plan, seen_urls, prog)
+                    results.extend(extra)
             except Exception:
-                pass
-            prog.remove_task(t)
+                break
 
     return results
 
@@ -585,6 +634,24 @@ def main():
             plan = make_plan(topic, depth)
             plan["_depth"] = depth
         console.print(f"[green]✓[/green] 검색 쿼리 {len(plan['queries'])}개 생성")
+
+        # needs 사용자 확인
+        needs = plan.get("needs", [])
+        console.print()
+        console.print("[bold]추출 항목 확인[/bold]  (DeepSeek 추천):")
+        for i, n in enumerate(needs, 1):
+            console.print(f"  [cyan]{i}[/cyan] {n}")
+        console.print("[dim]Enter=전체 사용  /  번호(예: 1,3,5)  /  직접입력(쉼표 구분)[/dim]")
+        needs_raw = Prompt.ask("선택", default="").strip()
+        if not needs_raw:
+            pass  # 전체 사용
+        elif re.match(r'^[\d,\s]+$', needs_raw):
+            idx = [int(x.strip()) - 1 for x in needs_raw.split(",") if x.strip().isdigit()]
+            selected = [needs[i] for i in idx if 0 <= i < len(needs)]
+            if selected:
+                plan["needs"] = selected
+        else:
+            plan["needs"] = [n.strip() for n in needs_raw.replace("，", ",").split(",") if n.strip()]
 
         # 2. 수집
         console.print("[cyan]웹 검색 및 페이지 수집 중...[/cyan]")

@@ -9,12 +9,16 @@
 - XLSX 저장
 """
 
-import os, time, re, json, random
+import os, time, re, json, random, platform
 try:
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
     _DDG_OK = True
 except ImportError:
-    _DDG_OK = False
+    try:
+        from duckduckgo_search import DDGS
+        _DDG_OK = True
+    except ImportError:
+        _DDG_OK = False
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote, urlparse, urljoin, unquote
@@ -43,20 +47,25 @@ except ImportError:
 #  설정
 # ──────────────────────────────────────────────
 OPENAI_API_KEY      = os.getenv("OPENAI_API_KEY", "")
-NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "")
-NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "hOkzw2aB1F771WNLWRro")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "TWryzeSyVA")
 NAVER_DELAY = 2.0
 GOOGLE_DELAY = 2.5
 SELENIUM_DELAY = 3.0
 OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+    if platform.system() == "Linux" else
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+)
 NAVER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": _UA,
     "Accept-Language": "ko-KR,ko;q=0.9",
     "Referer": "https://www.naver.com",
 }
 GOOGLE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": _UA,
     "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
@@ -463,8 +472,8 @@ def collect_candidates(plan, exclude_all, collect_target):
             candidates.append(item)
             print(f"      [후보] {domain} (Google)")
 
-    # ── DuckDuckGo 폴백: 네이버+구글 결과 부족 시 ──────────────────
-    if len(candidates) < collect_target // 2 and _DDG_OK:
+    # ── DuckDuckGo: 구글이 서버 IP에서 차단되므로 항상 보완 실행 ──────
+    if len(candidates) < collect_target and _DDG_OK:
         print("  [DDG 폴백] 네이버/구글 결과 부족 → DuckDuckGo 검색")
         all_queries = (naver_queries + google_queries)[:4]
         for q in all_queries:
