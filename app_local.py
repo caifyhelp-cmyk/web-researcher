@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -105,8 +105,11 @@ def _get_save_dir():
 SAVE_DIR = _get_save_dir()
 
 # ── 뇌 에이전트 연동 ─────────────────────────────────────────────
+_BRAIN_AGENT_URL = "https://brain-agent-v9wl.onrender.com/api/research"
 _BRAIN_AGENT = None
+
 def _get_brain_agent():
+    """로컬 thinking_agent import 시도 (개발자 PC 전용)"""
     global _BRAIN_AGENT
     if _BRAIN_AGENT is None:
         try:
@@ -120,22 +123,39 @@ def _get_brain_agent():
     return _BRAIN_AGENT if _BRAIN_AGENT else None
 
 def call_brain_agent(situation: str) -> str:
-    """뇌 에이전트 호출 — 실패 시 빈 문자열 반환"""
-    fn = _get_brain_agent()
-    if not fn:
-        return ""
+    """뇌 에이전트 호출 — HTTP API 우선, 로컬 폴백, 실패 시 빈 문자열"""
+    # 1순위: HTTP API (모든 PC에서 작동)
     try:
-        result = fn(situation)
-        parts = []
-        if result.get("judgment"):
-            parts.append(f"판단: {result['judgment']}")
-        if result.get("action"):
-            parts.append(f"액션: {result['action']}")
-        if result.get("reason"):
-            parts.append(f"근거: {result['reason']}")
-        return "\n".join(parts)
+        resp = requests.post(
+            _BRAIN_AGENT_URL,
+            json={"situation": situation},
+            timeout=15
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("ok"):
+                parts = []
+                if data.get("judgment"): parts.append(f"판단: {data['judgment']}")
+                if data.get("action"):   parts.append(f"액션: {data['action']}")
+                if data.get("reason"):   parts.append(f"근거: {data['reason']}")
+                return "\n".join(parts)
     except Exception:
-        return ""
+        pass
+
+    # 2순위: 로컬 import (개발자 PC)
+    fn = _get_brain_agent()
+    if fn:
+        try:
+            result = fn(situation)
+            parts = []
+            if result.get("judgment"): parts.append(f"판단: {result['judgment']}")
+            if result.get("action"):   parts.append(f"액션: {result['action']}")
+            if result.get("reason"):   parts.append(f"근거: {result['reason']}")
+            return "\n".join(parts)
+        except Exception:
+            pass
+
+    return ""
 
 # ═══════════════════════════════════════════════════════
 #  LLM 호출
