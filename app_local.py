@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -21,14 +21,17 @@ def _check_update():
         for gh_name, local_name in [("app_local.py", os.path.basename(__file__)),
                                      ("web_researcher.py", "web_researcher.py")]:
             try:
-                data, _ = urllib.request.urlretrieve(f"{_GITHUB_RAW}/{gh_name}")
-                with open(data, "rb") as src, \
+                tmp, _ = urllib.request.urlretrieve(f"{_GITHUB_RAW}/{gh_name}")
+                with open(tmp, "rb") as src, \
                      open(os.path.join(here, local_name), "wb") as dst:
                     dst.write(src.read())
             except Exception:
                 pass
         print("  업데이트 완료. 재시작합니다...\n")
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        # Windows에서 os.execv 대신 subprocess로 재시작
+        import subprocess
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        sys.exit(0)
     except Exception:
         pass  # 오프라인이거나 실패 시 그냥 실행
 
@@ -82,8 +85,24 @@ deepseek = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com") if 
 grok_ai  = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")      if GROK_KEY      else None
 
 console  = Console(highlight=False)
-SAVE_DIR = os.path.join(os.path.expanduser("~"), "Desktop", "리서치결과")
-os.makedirs(SAVE_DIR, exist_ok=True)
+
+# 저장 폴더 — Desktop 없으면 Documents, 그것도 없으면 홈
+def _get_save_dir():
+    home = os.path.expanduser("~")
+    for candidate in [
+        os.path.join(home, "Desktop", "리서치결과"),
+        os.path.join(home, "바탕 화면", "리서치결과"),
+        os.path.join(home, "Documents", "리서치결과"),
+        os.path.join(home, "리서치결과"),
+    ]:
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except Exception:
+            continue
+    return home
+
+SAVE_DIR = _get_save_dir()
 
 # ── 뇌 에이전트 연동 ─────────────────────────────────────────────
 _BRAIN_AGENT = None
@@ -827,6 +846,70 @@ def _save_ppt(base, topic, analysis):
         console.print(f"[red]PPT 오류: {e}[/red]")
 
 # ═══════════════════════════════════════════════════════
+#  채팅 모드 — 리서치 결과 기반 대화
+# ═══════════════════════════════════════════════════════
+def chat_mode(topic: str, plan: dict, analysis: dict, results: list):
+    """리서치 결과를 컨텍스트로 Claude와 대화"""
+    console.print()
+    console.print(Rule("[bold magenta]💬 결과 기반 대화 모드[/bold magenta]", style="magenta"))
+    console.print("[dim]수집된 데이터를 바탕으로 추가 질문하세요. 종료: q 또는 엔터[/dim]")
+
+    # 컨텍스트 구성
+    per_url_summary = "\n".join(
+        f"- [{d.get('domain','')}] {d.get('gpt',{}).get('한줄요약','')}"
+        for d in analysis.get("per_url", [])[:10]
+    )
+    ctx = (
+        f"리서치 주제: {topic}\n"
+        f"조사 유형: {plan.get('research_type','')}\n\n"
+        f"수집된 사이트별 요약:\n{per_url_summary}\n\n"
+        f"GPT-4o 시장 분석:\n{analysis.get('gpt_analysis','')[:1500]}\n\n"
+        f"전략 인사이트:\n{analysis.get('claude_insights','')[:800]}\n\n"
+        f"뇌 에이전트 판단:\n{analysis.get('brain_insights','(미연동)')}"
+    )
+    history = []  # 대화 히스토리
+
+    while True:
+        console.print()
+        q = Prompt.ask("[bold magenta]질문[/bold magenta]").strip()
+        if not q or q.lower() == "q":
+            break
+
+        history.append({"role": "user", "content": q})
+        msgs = [
+            {"role": "system", "content":
+                f"당신은 아래 웹 리서치 결과를 완전히 숙지한 전문 마케팅 분석가입니다.\n"
+                f"실제 수집된 데이터 기반으로만 답하고, 모르면 솔직히 말하세요.\n\n"
+                f"=== 리서치 컨텍스트 ===\n{ctx}"},
+        ] + history
+
+        with console.status("[dim]분석 중...[/dim]"):
+            try:
+                if claude_c:
+                    r = claude_c.messages.create(
+                        model="claude-opus-4-6", max_tokens=1500,
+                        system=msgs[0]["content"],
+                        messages=history
+                    )
+                    answer = r.content[0].text.strip()
+                elif oai:
+                    r = oai.chat.completions.create(
+                        model="gpt-4o", messages=msgs, max_tokens=1500
+                    )
+                    answer = r.choices[0].message.content.strip()
+                else:
+                    answer = "API 키가 없습니다."
+            except Exception as e:
+                answer = f"오류: {e}"
+
+        history.append({"role": "assistant", "content": answer})
+        console.print()
+        console.print(Panel(answer, border_style="magenta", padding=(0,2)))
+
+    console.print("[dim]대화 모드 종료[/dim]")
+
+
+# ═══════════════════════════════════════════════════════
 #  메인
 # ═══════════════════════════════════════════════════════
 def main():
@@ -904,7 +987,10 @@ def main():
         # 5. 저장
         save_results(topic, plan, analysis, results)
 
-        # 6. 계속?
+        # 6. 채팅 모드
+        chat_mode(topic, plan, analysis, results)
+
+        # 7. 계속?
         console.print()
         if not Confirm.ask("[bold]새 주제를 조사할까요?[/bold]", default=True):
             console.print("\n[dim]프로그램을 종료합니다.[/dim]")
