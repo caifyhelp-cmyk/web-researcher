@@ -49,12 +49,13 @@ def _check_update():
         if not self_ok:
             print(f"  업데이트 파일 검증 실패 (VERSION 불일치). 재시작 건너뜀.")
             return
-        print("  업데이트 완료. 자동 재시작합니다...\n")
+        print("  업데이트 완료. 재시작합니다...\n")
         import subprocess
         time.sleep(1)
-        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
-                         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0)
-        sys.exit(0)
+        # 새 창 열지 않고 현재 콘솔을 그대로 이어받아 재시작
+        # CREATE_NEW_CONSOLE 제거 → "아무 키나 누르세요" 없음
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        os._exit(0)  # sys.exit 대신 os._exit → Python 정리 코드 건너뛰고 즉시 종료
     except Exception:
         pass  # 오프라인이거나 실패 시 그냥 실행
 
