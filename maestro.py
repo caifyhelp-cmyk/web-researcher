@@ -323,8 +323,18 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
                 if name:
                     lines.append(f"- {name}  {url}")
 
-        # 파일로 저장
-        _rl.save_results(topic, plan, analysis, results)
+        # 자동으로 Excel 저장 (프롬프트 없이)
+        try:
+            import re as _re
+            from datetime import datetime as _dt
+            ts   = _dt.now().strftime("%Y%m%d_%H%M")
+            safe = _re.sub(r'[^\w가-힣]', '_', topic)[:30]
+            base = f"리서치_{safe}_{ts}"
+            saved_path = _rl._save_excel(base, topic, analysis, results)
+            if saved_path:
+                lines.append(f"\n저장 완료: {saved_path}")
+        except Exception as e:
+            lines.append(f"\n[저장 실패: {e}]")
 
         return "\n".join(lines)
     except Exception as e:
