@@ -2,25 +2,53 @@
 """
 MAESTRO 집단지성 파이프라인
 
-사용자 대화에서 좋은 아이디어/패턴/로직을 추출하여
-knowledge_base.json에 축적 → MAESTRO 시스템 프롬프트 자동 반영.
+사용자 대화에서 좋은 아이디어/패턴/로직을 추출 → GitHub 집중 → 큐레이션 → MAESTRO 반영.
 
 흐름:
-  암호화 대화 로그 → GPT-4o-mini 분석 → 패턴 추출
-  → knowledge_base.json 저장
-  → 조경일 큐레이션(승인/거부)
-  → MAESTRO 시스템 프롬프트에 반영
+  암호화 대화 로그 → PII 제거 → GPT-4o-mini 패턴 추출
+  → knowledge_pending.json → GitHub 자동 푸시
+  → 조경일 큐레이션 (python pattern_collector.py)
+  → knowledge_base.json → MAESTRO 시스템 프롬프트 자동 반영
+
+개인정보 보호:
+  - 실제 대화: 암호화 로컬 저장, 절대 외부 전송 안 됨
+  - 패턴 추출 전 PII 필터링 (이름/번호/이메일/주소 제거)
+  - GitHub에는 행동 패턴만 저장, 개인 식별 불가
 """
 
-import os, json, re
+import os, json, re, urllib.request, urllib.error
 from datetime import datetime
 from pathlib import Path
 
 _HERE = Path(__file__).parent
-_KB_PATH = _HERE / "knowledge_base.json"
+_KB_PATH      = _HERE / "knowledge_base.json"
 _PENDING_PATH = _HERE / "knowledge_pending.json"
 
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+_GH_TOKEN  = (os.getenv("GITHUB_TOKEN", "") or os.getenv("GH_TOKEN", "")
+              or os.getenv("GITHUB_DATA_TOKEN", ""))
+_GH_REPO   = "caifyhelp-cmyk/web-researcher"
+_GH_BRANCH = "master"
+
+
+# ══════════════════════════════════════════════
+#  PII 필터링 — 개인정보 제거 후 패턴 추출
+# ══════════════════════════════════════════════
+
+_PII_PATTERNS = [
+    (r'\b\d{3}[-.\s]?\d{4}[-.\s]?\d{4}\b', '[전화번호]'),       # 전화번호
+    (r'\b\d{6}[-]\d{7}\b', '[주민번호]'),                         # 주민등록번호
+    (r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[이메일]'),  # 이메일
+    (r'\b(?:서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충북|충남|전북|전남|경북|경남|제주).{0,20}(?:구|동|로|길)\s*\d+', '[주소]'),  # 주소
+    (r'\b\d{3}-\d{2}-\d{5}\b', '[사업자번호]'),                   # 사업자번호
+    (r'(?:이름|성함|name)\s*[:：]\s*\S+', '[이름]'),               # 이름 필드
+]
+
+def _remove_pii(text: str) -> str:
+    """개인식별정보 제거"""
+    for pattern, replacement in _PII_PATTERNS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
 
 
 # ══════════════════════════════════════════════
@@ -60,6 +88,122 @@ def save_pending(items: list):
 #  대화에서 패턴 추출
 # ══════════════════════════════════════════════
 
+def _gh_api(method: str, path: str, data: dict = None) -> dict:
+    """GitHub API 호출"""
+    url  = f"https://api.github.com/repos/{_GH_REPO}/{path}"
+    body = json.dumps(data, ensure_ascii=False).encode() if data else None
+    req  = urllib.request.Request(url, data=body, method=method, headers={
+        "Authorization": f"token {_GH_TOKEN}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/vnd.github.v3+json",
+        "User-Agent":    "maestro-pattern-collector",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return {"error": str(e), "body": e.read().decode()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def push_pending_to_github():
+    """
+    knowledge_pending.json을 GitHub에 푸시.
+    모든 PC의 패턴이 GitHub 하나로 집중됨.
+    """
+    if not _GH_TOKEN:
+        return False
+
+    pending = load_pending()
+    if not pending:
+        return False
+
+    import base64
+
+    content = json.dumps(pending, ensure_ascii=False, indent=2)
+    content_b64 = base64.b64encode(content.encode()).decode()
+
+    # 현재 파일의 SHA 가져오기 (업데이트 시 필요)
+    existing = _gh_api("GET", f"contents/knowledge_pending.json")
+    sha = existing.get("sha", "")
+
+    payload = {
+        "message": f"chore: 패턴 업데이트 ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+        "content": content_b64,
+        "branch":  _GH_BRANCH,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    result = _gh_api("PUT", "contents/knowledge_pending.json", payload)
+    return "content" in result
+
+
+def pull_pending_from_github() -> bool:
+    """
+    GitHub의 knowledge_pending.json을 로컬로 가져옴.
+    큐레이션 전 최신 상태 동기화.
+    """
+    if not _GH_TOKEN:
+        return False
+    try:
+        import base64
+        result = _gh_api("GET", "contents/knowledge_pending.json")
+        if "content" in result:
+            content = base64.b64decode(result["content"]).decode()
+            items = json.loads(content)
+            save_pending(items)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def push_kb_to_github():
+    """승인된 knowledge_base.json도 GitHub에 푸시 — 모든 PC가 공유"""
+    if not _GH_TOKEN:
+        return False
+    try:
+        import base64
+        kb = load_kb()
+        content = json.dumps(kb, ensure_ascii=False, indent=2)
+        content_b64 = base64.b64encode(content.encode()).decode()
+
+        existing = _gh_api("GET", "contents/knowledge_base.json")
+        sha = existing.get("sha", "")
+
+        payload = {
+            "message": f"chore: 지식베이스 업데이트 ({datetime.now().strftime('%Y-%m-%d %H:%M')})",
+            "content": content_b64,
+            "branch":  _GH_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+
+        result = _gh_api("PUT", "contents/knowledge_base.json", payload)
+        return "content" in result
+    except Exception:
+        return False
+
+
+def pull_kb_from_github() -> bool:
+    """GitHub의 knowledge_base.json을 로컬로 가져옴 — MAESTRO 시작 시 자동 호출"""
+    if not _GH_TOKEN:
+        return False
+    try:
+        import base64
+        result = _gh_api("GET", "contents/knowledge_base.json")
+        if "content" in result:
+            content = base64.b64decode(result["content"]).decode()
+            kb = json.loads(content)
+            save_kb(kb)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def extract_patterns(topic: str, conversation: str, score: int) -> list:
     """
     대화에서 좋은 아이디어/패턴/로직을 추출.
@@ -74,11 +218,14 @@ def extract_patterns(topic: str, conversation: str, score: int) -> list:
         from openai import OpenAI
         client = OpenAI(api_key=OPENAI_KEY)
 
+        # PII 제거 후 GPT 전송
+        safe_conv = _remove_pii(conversation[:3000])
+
         prompt = f"""아래 대화에서 다른 사용자들에게도 도움이 될 만한 좋은 아이디어, 활용 패턴, 효과적인 요청 방식을 추출하세요.
 
 주제: {topic}
 대화:
-{conversation[:3000]}
+{safe_conv}
 
 추출 기준:
 - 창의적인 활용 방식
@@ -139,6 +286,10 @@ def add_to_pending(patterns: list, topic: str):
 
 def curate_pending():
     """대기 중인 패턴을 검토하고 승인/거부"""
+    # GitHub에서 최신 패턴 가져오기 (모든 PC 패턴 통합)
+    print("GitHub에서 최신 패턴 동기화 중...")
+    pull_pending_from_github()
+
     pending = load_pending()
     if not pending:
         print("검토할 패턴이 없습니다.")
@@ -172,6 +323,14 @@ def curate_pending():
     save_kb(kb)
     save_pending(remaining)
     print(f"\n완료. 승인: {approved_count}개, 대기: {len(remaining)}개")
+
+    # GitHub 업데이트 (큐레이션 결과 반영)
+    if approved_count > 0:
+        print("승인된 지식베이스 GitHub 동기화 중...")
+        push_kb_to_github()
+    if remaining or approved_count > 0:
+        print("대기 목록 GitHub 동기화 중...")
+        push_pending_to_github()
 
 
 # ══════════════════════════════════════════════
@@ -210,11 +369,12 @@ def build_knowledge_prompt() -> str:
 # ══════════════════════════════════════════════
 
 def process_conversation(topic: str, conversation: str, score: int):
-    """대화 처리 → 패턴 추출 → 대기열 추가"""
+    """대화 처리 → 패턴 추출 → 대기열 추가 → GitHub 동기화"""
     patterns = extract_patterns(topic, conversation, score)
     if patterns:
         add_to_pending(patterns, topic)
         print(f"  [집단지성] {len(patterns)}개 패턴 추출 → 검토 대기열 추가")
+        push_pending_to_github()  # 모든 PC의 패턴이 GitHub으로 집중
 
 
 if __name__ == "__main__":
