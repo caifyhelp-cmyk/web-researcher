@@ -34,12 +34,20 @@ def _check_update():
                 with open(dest, "wb") as dst:
                     dst.write(data)
                 if local_name == os.path.basename(__file__):
-                    self_ok = True   # 자기 자신 교체 성공
+                    # 다운받은 파일 안의 VERSION이 실제로 latest와 일치하는지 확인
+                    import re as _re
+                    try:
+                        written = open(dest, encoding="utf-8", errors="replace").read()
+                        m = _re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', written)
+                        if m and m.group(1) == latest:
+                            self_ok = True
+                    except Exception:
+                        pass
             except Exception:
                 pass
-        # 자신의 파일이 실제로 교체됐을 때만 재시작 — 아니면 무한루프
+        # 파일 안의 VERSION이 latest와 일치할 때만 재시작 — 아니면 무한루프
         if not self_ok:
-            print("  자체 파일 업데이트 실패. 재시작 건너뜀.")
+            print(f"  업데이트 파일 검증 실패 (VERSION 불일치). 재시작 건너뜀.")
             return
         print("  업데이트 완료. 자동 재시작합니다...\n")
         import subprocess
