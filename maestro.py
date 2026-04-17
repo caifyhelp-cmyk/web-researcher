@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -71,6 +71,15 @@ try:
     _PC = True
 except Exception:
     _PC = False
+
+# ── 툴 지식 DB ────────────────────────────────────────────────────
+_TOOLS_KB_PATH = Path(__file__).parent / "tools_kb.json"
+
+def _load_tools_kb() -> list:
+    try:
+        return json.loads(_TOOLS_KB_PATH.read_text(encoding="utf-8")).get("tools", [])
+    except Exception:
+        return []
 
 # 마지막 리서치 결과 캐시 (save_research 도구에서 재사용)
 _last_research: dict = {}
@@ -294,6 +303,74 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
             return f"[GPT-4o 오류: {e}]"
 
     return f"[알 수 없는 모델: {model}]"
+
+
+def _tool_lookup_tool(query: str) -> str:
+    """툴 지식 DB에서 검색. 없으면 웹에서 찾아 DB에 추가."""
+    tools = _load_tools_kb()
+    query_lower = query.lower()
+
+    # 이름 또는 카테고리/용도로 검색
+    matches = [
+        t for t in tools
+        if query_lower in t["name"].lower()
+        or query_lower in t.get("category", "").lower()
+        or any(query_lower in u.lower() for u in t.get("use_cases", []))
+        or query_lower in t.get("description", "").lower()
+    ]
+
+    if matches:
+        lines = []
+        for t in matches[:3]:
+            lines.append(f"## {t['name']} ({t['category']})")
+            lines.append(t["description"])
+            lines.append(f"용도: {', '.join(t.get('use_cases', []))}")
+            p = t.get("pricing", {})
+            if p.get("free"):  lines.append(f"무료: {p['free']}")
+            if p.get("paid"):  lines.append(f"유료: {p['paid']}")
+            lines.append(f"강점: {', '.join(t.get('strengths', []))}")
+            lines.append(f"주의: {', '.join(t.get('weaknesses', []))}")
+            lines.append(f"시작 방법: {t.get('how_to_start', '')}")
+            lines.append(f"추천 상황: {t.get('best_for', '')}")
+            lines.append("")
+        return "\n".join(lines)
+
+    # DB에 없으면 웹 검색으로 보완
+    search_result = _tool_web_search(f"{query} 툴 기능 가격 사용법 무료 유료", num_results=3)
+    return f"[DB에 없음] 웹 검색 결과:\n{search_result[:1500]}"
+
+
+def _tool_vibe_coding_guide(idea: str, level: str = "입문") -> str:
+    """
+    바이브코딩 로드맵 생성.
+    아이디어를 받아서 어떤 툴로 어떻게 단계별로 만들지 안내.
+    level: 입문 | 중급 | 고급
+    """
+    tools = _load_tools_kb()
+    tools_summary = "\n".join(
+        f"- {t['name']} ({t['category']}): {t['description'][:60]}"
+        for t in tools
+    )
+
+    prompt = f"""당신은 바이브코딩 전문가 멘토입니다.
+
+사용자 아이디어: {idea}
+사용자 수준: {level}
+
+사용 가능한 툴 목록:
+{tools_summary}
+
+아래 형식으로 실행 가능한 로드맵을 한국어로 작성해주세요:
+
+1. 이 아이디어를 한 줄로 재정의 (더 명확하게)
+2. 추천 툴 조합 (왜 이 툴인지 이유 포함)
+3. 단계별 구현 순서 (각 단계 예상 시간 포함)
+4. 첫 번째로 해야 할 것 딱 하나
+5. 막힐 수 있는 포인트와 해결 방법
+
+{level}자도 바로 시작할 수 있게 구체적으로 작성해주세요."""
+
+    return _tool_ask_specialist("claude", prompt)
 
 
 def _tool_generate_image(prompt: str, size: str = "1024x1024", quality: str = "standard") -> str:
@@ -603,6 +680,10 @@ def _exec_tool(name: str, args: dict) -> str:
                                 args.get("depth", "중간")),
         "save_research":    lambda: _tool_save_research(
                                 args.get("formats", ["excel"])),
+        "lookup_tool":        lambda: _tool_lookup_tool(args.get("query", "")),
+        "vibe_coding_guide":  lambda: _tool_vibe_coding_guide(
+                                  args.get("idea", ""),
+                                  args.get("level", "입문")),
         "generate_image":   lambda: _tool_generate_image(
                                 args.get("prompt", ""),
                                 args.get("size", "1024x1024"),
@@ -724,6 +805,21 @@ _TOOL_DEFS = [
         }, "required": ["model", "prompt"]}
     }},
     {"type": "function", "function": {
+        "name": "lookup_tool",
+        "description": "툴/서비스 정보를 조회합니다. 어떤 툴인지, 기능, 가격, 무료/유료, 시작 방법을 알 수 있습니다. Carrd, Framer, n8n, Supabase, Vercel, Notion, Readdy, Antigravity, Codx 등.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "툴 이름 또는 용도 (예: '랜딩페이지', 'Carrd', '자동화')"}
+        }, "required": ["query"]}
+    }},
+    {"type": "function", "function": {
+        "name": "vibe_coding_guide",
+        "description": "바이브코딩 로드맵을 만들어줍니다. 아이디어를 말하면 어떤 툴로 어떻게 단계별로 만들지 구체적인 계획을 제시합니다. 막막한 사람, 처음 시작하는 사람에게 특히 유용합니다.",
+        "parameters": {"type": "object", "properties": {
+            "idea":  {"type": "string", "description": "만들고 싶은 것"},
+            "level": {"type": "string", "enum": ["입문", "중급", "고급"], "description": "사용자 기술 수준"}
+        }, "required": ["idea"]}
+    }},
+    {"type": "function", "function": {
         "name": "generate_image",
         "description": "DALL-E 3로 이미지를 생성합니다. 마케팅 배너, 썸네일, 일러스트, 아이디어 시각화 등에 사용하세요.",
         "parameters": {"type": "object", "properties": {
@@ -810,77 +906,85 @@ def _build_system_prompt() -> str:
     return _SYSTEM_BASE + knowledge_section
 
 
-_SYSTEM_BASE = """[절대 규칙] 모든 응답은 반드시 한국어로만 작성합니다. 영어로 절대 답변하지 않습니다. 전문 용어도 한국어로 설명합니다.
+_SYSTEM_BASE = """[절대 규칙] 모든 응답은 반드시 한국어로만 작성합니다. 영어 금지. 전문 용어도 한국어로 설명합니다.
 
 당신은 MAESTRO입니다.
 
-조경일의 뇌 에이전트, Claude Code, DeepSeek, Grok을 손발처럼 부리는 AI 오케스트레이터입니다.
-당신은 규칙집을 따르지 않습니다. 대화에서 상대방이 진짜 원하는 것을 파악하고, 그걸 가장 잘 해낼 수 있는 방법을 스스로 판단합니다.
+아이디어를 실제로 만들어주고, 방향을 잡아주고, 함께 배워가는 AI입니다.
+단순히 답을 주는 게 아니라 — 실제로 실행하고, 가르치고, 함께 성장합니다.
 
 ---
 
-## 당신이 가진 능력들
+## MAESTRO의 핵심 철학
 
-**generate_image** — DALL-E 3로 이미지를 만듭니다.
-마케팅 배너, 썸네일, 아이디어 시각화, 일러스트 등 이미지가 필요할 때 씁니다.
+**"다른 사람들은 이런 상황에서 이렇게 했어요"**
+비슷한 상황의 사용자들이 발견한 좋은 방법을 자연스럽게 안내합니다.
+정답을 강요하지 않고, 선택지와 맥락을 줍니다.
 
-**create_chart** — 데이터를 차트/그래프로 시각화합니다.
-막대, 선, 파이, 면적, 산점도 지원. 숫자 데이터가 있으면 시각화를 제안하세요.
+**"같이 만들면서 배워요"**
+바이브코딩은 혼자 공부하는 게 아닙니다. 실제로 만들면서 배우는 겁니다.
+막막하면 작게 쪼개서 시작합니다. 첫 번째 한 걸음만 제시합니다.
 
-**web_research** — 웹 리서치 전체 파이프라인입니다.
-경쟁사 분석, 시장 조사, 업체 비교 등 특정 주제를 깊게 파야 할 때 씁니다.
-완료 후 반드시 사용자에게 "어떤 형식으로 저장할까요? (Excel / PDF / PPT)" 를 물어보세요.
-
-**save_research** — 리서치 결과를 파일로 저장합니다.
-사용자가 원하는 형식을 말하면 Excel, PDF, PPT 중 하나 또는 여러 개를 동시에 저장합니다.
-"다 해줘", "전부" 같은 말이면 세 가지 모두 저장하세요.
-
-**ask_claude_code** — 실제 Claude Code CLI를 호출합니다.
-파일을 만들고, 코드를 짜고, 버그를 고치고, 테스트까지 돌립니다.
-누군가 뭔가를 만들거나 수정하길 원할 때 가장 강력한 선택입니다.
-
-**ask_specialist("deepseek")** — 깊이 생각해야 할 때 씁니다.
-복잡한 추론, 알고리즘 설계, 단계별로 따져야 하는 분석.
-
-**ask_specialist("claude")** — 섬세하게 표현해야 할 때 씁니다.
-긴 문서, 뉘앙스가 중요한 글쓰기, 정밀한 언어 작업.
-
-**ask_specialist("grok")** — 지금 세상에서 일어나는 일을 알아야 할 때 씁니다.
-최신 뉴스, 트렌드, 실시간 정보.
-
-**ask_brain** — 조경일의 마케터 뇌에게 판단을 구합니다.
-마케팅 방향, 전략적 선택, 비즈니스 감각이 필요한 순간.
-마케팅이나 전략 주제가 나오면 자연스럽게 뇌 에이전트 시각을 녹여넣으세요.
-
-**web_search / web_fetch** — 모르는 건 찾아봅니다. 추측하지 않습니다.
-
-**read_file / write_file / edit_file / run_bash / glob_search / grep_search / list_dir**
-— 파일 시스템과 터미널에 직접 접근합니다.
+**"어떤 툴을 써야 할지 알고 있어요"**
+Carrd, Framer, n8n, Supabase, Vercel, Notion, Claude Code 등
+각 툴의 강점과 과금 방식을 알고 있고, 상황에 맞는 것을 추천합니다.
 
 ---
 
-## 판단 방식
+## 도구 목록
 
-키워드로 도구를 고르지 마세요.
-대화의 맥락을 읽고, 상대방이 지금 무엇을 원하는지, 그 결과물이 어떤 형태여야 하는지를 먼저 생각하세요.
+**vibe_coding_guide** — 바이브코딩 로드맵 생성
+아이디어가 있는데 어디서 시작해야 할지 모를 때. 어떤 툴로 어떻게 만들지 단계별 계획을 드립니다.
 
-- 뭔가를 만들고 싶어하는가? → Claude Code가 직접 만드는 게 낫다
-- 정보가 필요한가? → 검색하고 정리해준다
-- 판단이 필요한가? → 조경일 뇌 에이전트의 감각을 빌린다
-- 복잡하게 따져야 하는가? → DeepSeek에게 넘긴다
-- 지금 세상 돌아가는 걸 알아야 하는가? → Grok에게 묻는다
-- 여러 능력이 동시에 필요한가? → 조합해서 쓴다
+**lookup_tool** — 툴/서비스 정보 조회
+"Carrd가 뭐야?", "n8n 무료야?", "랜딩페이지 만드는 툴 뭐 있어?" 같은 질문에 답합니다.
 
-확신이 없으면 먼저 물어보세요. 가정하지 마세요.
+**ask_claude_code** — 실제 Claude Code로 구현
+만들어달라고 하면 실제로 파일을 만들고, 코드를 짜고, 실행까지 합니다.
+
+**web_research** — 시장/경쟁사/정보 수집
+특정 주제를 깊게 조사해서 구조화된 결과를 줍니다. 완료 후 저장 형식을 물어보세요.
+
+**save_research** — 리서치 결과 저장
+Excel, PDF, PPT 중 원하는 형식으로. "다 해줘"하면 세 가지 모두 저장합니다.
+
+**generate_image** — DALL-E 3 이미지 생성
+마케팅 배너, 썸네일, 아이디어 시각화 등.
+
+**create_chart** — 차트/그래프 생성
+숫자 데이터가 있으면 시각화를 먼저 제안하세요.
+
+**ask_brain** — 조경일 마케터 뇌 판단
+마케팅, 전략, 비즈니스 방향 판단. 전략적 선택이 필요할 때 자연스럽게 활용합니다.
+
+**ask_specialist("deepseek")** — 복잡한 추론/알고리즘
+**ask_specialist("claude")** — 정밀한 글쓰기/문서 분석
+**ask_specialist("grok")** — 실시간/최신 정보
+
+**web_search / web_fetch / read_file / write_file / edit_file / run_bash / glob_search / grep_search / list_dir**
+— 검색, 파일, 터미널 직접 접근.
+
+---
+
+## 바이브코딩 가이드 원칙
+
+처음 시작하는 사람이 오면:
+1. 아이디어를 먼저 명확하게 만들어줍니다
+2. 어떤 툴 조합이 맞는지 이유와 함께 추천합니다
+3. 단계를 잘게 쪼개서 첫 번째 것만 시작하게 합니다
+4. 각 단계마다 "왜 이렇게 하는지" 설명합니다
+5. 막히면 다른 방법을 제시합니다
+
+중급/고급자에게는 설명을 줄이고 실행에 집중합니다.
 
 ---
 
 ## 응답 방식
-- 반드시 한국어로만 답변합니다. 영어 금지.
-- 전문가에게 위임한 결과가 영어로 와도 한국어로 번역해서 전달합니다.
-- 뭘 할지 설명하기 전에 일단 합니다.
-- 완료되면 결과를 보여주고 다음을 묻습니다.
-- 길게 설명하지 않습니다. 핵심만."""
+- 반드시 한국어로만. 영어 절대 금지.
+- 전문가 결과가 영어로 와도 번역해서 전달합니다.
+- 설명보다 실행 먼저. 완료 후 다음을 묻습니다.
+- 숫자/데이터 나오면 차트 시각화를 제안합니다.
+- 막막해하는 사람에게는 "일단 이것만 해봐요"로 시작합니다."""
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -985,8 +1089,10 @@ _TOOL_ICONS = {
     "ask_claude_code": "[CLAUDE CODE]",
     "web_research":    "[RESEARCH]",
     "save_research":   "[SAVE]",
-    "generate_image":  "[IMAGE]",
-    "create_chart":    "[CHART]",
+    "generate_image":    "[IMAGE]",
+    "create_chart":      "[CHART]",
+    "lookup_tool":       "[TOOL]",
+    "vibe_coding_guide": "[VIBE]",
 }
 
 def _show_tool_call(name: str, args: dict):
@@ -1020,6 +1126,10 @@ def _show_tool_call(name: str, args: dict):
     elif name == "save_research":
         fmts = ", ".join(args.get("formats", []))
         console.print(f"  {icon} [dim]{fmts} 저장 중...[/dim]")
+    elif name == "lookup_tool":
+        console.print(f"  {icon} [dim]{args.get('query', '')} 조회 중...[/dim]")
+    elif name == "vibe_coding_guide":
+        console.print(f"  {icon} [bold yellow]{args.get('idea', '')[:50]}...[/bold yellow]")
     elif name == "generate_image":
         p = args.get("prompt", "")[:50]
         console.print(f"  {icon} [bold magenta]{p}...[/bold magenta]")
