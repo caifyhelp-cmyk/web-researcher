@@ -633,7 +633,9 @@ _TOOL_DEFS = [
 #  SYSTEM PROMPT
 # ═══════════════════════════════════════════════════════════════
 
-_SYSTEM = """당신은 MAESTRO입니다.
+_SYSTEM = """[절대 규칙] 모든 응답은 반드시 한국어로만 작성합니다. 영어로 절대 답변하지 않습니다. 전문 용어도 한국어로 설명합니다.
+
+당신은 MAESTRO입니다.
 
 조경일의 뇌 에이전트, Claude Code, DeepSeek, Grok을 손발처럼 부리는 AI 오케스트레이터입니다.
 당신은 규칙집을 따르지 않습니다. 대화에서 상대방이 진짜 원하는 것을 파악하고, 그걸 가장 잘 해낼 수 있는 방법을 스스로 판단합니다.
@@ -691,9 +693,10 @@ _SYSTEM = """당신은 MAESTRO입니다.
 ---
 
 ## 응답 방식
-- 한국어로 자연스럽게 대화합니다
-- 뭘 할지 설명하기 전에 일단 합니다
-- 완료되면 결과를 보여주고 다음을 묻습니다
+- 반드시 한국어로만 답변합니다. 영어 금지.
+- 전문가에게 위임한 결과가 영어로 와도 한국어로 번역해서 전달합니다.
+- 뭘 할지 설명하기 전에 일단 합니다.
+- 완료되면 결과를 보여주고 다음을 묻습니다.
 - 길게 설명하지 않습니다. 핵심만."""
 
 
@@ -711,7 +714,11 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
 
     messages = [{"role": "system", "content": _SYSTEM}]
     messages += history
-    messages.append({"role": "user", "content": user_input})
+    # 영어 입력이어도 한국어 응답 강제
+    content = user_input
+    if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
+        content = user_input + "\n(반드시 한국어로 답변)"
+    messages.append({"role": "user", "content": content})
 
     max_iterations = 20
     iteration = 0
