@@ -169,11 +169,20 @@ _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
 import urllib.request, urllib.error
 
 def _call_brain(situation: str) -> str:
+    ping_url  = _BRAIN_URL.replace("/api/research", "/")
+    api_url   = _BRAIN_URL
+
+    # 콜드 스타트 대응: 먼저 홈 핑해서 깨우기
+    try:
+        urllib.request.urlopen(ping_url, timeout=5)
+    except Exception:
+        pass
+
     try:
         body = json.dumps({"situation": situation}, ensure_ascii=False).encode()
-        req  = urllib.request.Request(_BRAIN_URL, data=body, method="POST",
+        req  = urllib.request.Request(api_url, data=body, method="POST",
                                       headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=90) as r:   # 콜드 스타트 고려 90초
             data = json.loads(r.read())
         if data.get("ok"):
             parts = []
@@ -181,9 +190,10 @@ def _call_brain(situation: str) -> str:
             if data.get("action"):   parts.append(f"액션: {data['action']}")
             if data.get("reason"):   parts.append(f"근거: {data['reason']}")
             return "\n".join(parts) or "[뇌 에이전트 응답 없음]"
+        err = data.get("error", "")
+        return f"[뇌 에이전트 오류: {err}]"
     except Exception as e:
         return f"[뇌 에이전트 연결 실패: {e}]"
-    return "[뇌 에이전트 응답 없음]"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1411,14 +1421,27 @@ def main():
     if deepseek: models.append("DeepSeek")
     if grok_ai:  models.append("Grok")
 
-    # 뇌 에이전트 핑
+    # 뇌 에이전트 핑 (콜드 스타트 워밍업 포함)
     brain_ok = False
     try:
         ping_url = _BRAIN_URL.replace("/api/research", "/")
-        with urllib.request.urlopen(ping_url, timeout=5) as r:
+        with urllib.request.urlopen(ping_url, timeout=10) as r:
             brain_ok = r.status < 500
     except Exception:
         brain_ok = False
+
+    # 콜드 스타트 대비: 백그라운드에서 미리 /api/research 워밍업
+    if brain_ok:
+        import threading
+        def _warmup():
+            try:
+                body = json.dumps({"situation": "워밍업"}, ensure_ascii=False).encode()
+                req  = urllib.request.Request(_BRAIN_URL, data=body, method="POST",
+                                              headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=60)
+            except Exception:
+                pass
+        threading.Thread(target=_warmup, daemon=True).start()
 
     brain_str = "[green]연동됨[/green]" if brain_ok else "[red]미연동[/red]"
     orch_str  = "[green]활성[/green]"   if _ORCH     else "[red]비활성[/red]"
