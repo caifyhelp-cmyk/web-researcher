@@ -69,6 +69,11 @@ except Exception:
 try:
     import pattern_collector as _pc
     _PC = True
+    # 시작 시 GitHub에서 최신 지식베이스 동기화
+    try:
+        _pc.pull_kb_from_github()
+    except Exception:
+        pass
 except Exception:
     _PC = False
 
