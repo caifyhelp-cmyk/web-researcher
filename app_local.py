@@ -16,8 +16,9 @@ def _check_update():
             latest = r.read().decode().strip()
         if latest == VERSION:
             return
-        print(f"  업데이트 발견: {VERSION} → {latest}  다운로드 중...")
+        print(f"  업데이트 발견: {VERSION} -> {latest}  다운로드 중...")
         here = os.path.dirname(os.path.abspath(__file__))
+        self_ok = False   # app_local.py 자신이 성공적으로 교체됐는지 추적
         for gh_name, local_name in [("app_local.py",          os.path.basename(__file__)),
                                      ("web_researcher.py",    "web_researcher.py"),
                                      ("orchestrator.py",      "orchestrator.py"),
@@ -27,13 +28,21 @@ def _check_update():
                                      ("tools_kb.json",        "tools_kb.json")]:
             try:
                 tmp, _ = urllib.request.urlretrieve(f"{_GITHUB_RAW}/{gh_name}")
-                with open(tmp, "rb") as src, \
-                     open(os.path.join(here, local_name), "wb") as dst:
-                    dst.write(src.read())
+                dest = os.path.join(here, local_name)
+                with open(tmp, "rb") as src:
+                    data = src.read()
+                with open(dest, "wb") as dst:
+                    dst.write(data)
+                if local_name == os.path.basename(__file__):
+                    self_ok = True   # 자기 자신 교체 성공
             except Exception:
                 pass
+        # 자신의 파일이 실제로 교체됐을 때만 재시작 — 아니면 무한루프
+        if not self_ok:
+            print("  자체 파일 업데이트 실패. 재시작 건너뜀.")
+            return
         print("  업데이트 완료. 자동 재시작합니다...\n")
-        import subprocess, time
+        import subprocess
         time.sleep(1)
         subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
                          creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0)
