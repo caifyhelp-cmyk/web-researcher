@@ -89,6 +89,108 @@ def _load_tools_kb() -> list:
 # 마지막 리서치 결과 캐시 (save_research 도구에서 재사용)
 _last_research: dict = {}
 
+# ── 회의록 자동화 경로 ────────────────────────────────────────────
+_MEETING_AUTO_DIR = Path(os.path.expanduser("~")) / "Desktop" / "meeting_auto"
+
+# ── 응답 캐시 (SQLite + 임베딩) ───────────────────────────────────
+import sqlite3
+
+_CACHE_DB_PATH = Path(os.path.expanduser("~")) / ".maestro" / "response_cache.db"
+_CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+_CACHE_THRESHOLD = 0.92   # 코사인 유사도 임계값
+_CACHE_TTL_DAYS  = 7      # 캐시 유효 기간
+
+def _cache_init():
+    conn = sqlite3.connect(str(_CACHE_DB_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS response_cache (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_hash  TEXT NOT NULL,
+            query_text  TEXT NOT NULL,
+            embedding   TEXT NOT NULL,
+            response    TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            hit_count   INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_cache_init()
+
+def _embed_query(text: str) -> list:
+    """짧은 쿼리를 임베딩으로 변환 (text-embedding-3-small, 초저가)"""
+    if not oai:
+        return []
+    try:
+        resp = oai.embeddings.create(model="text-embedding-3-small", input=[text[:500]])
+        return resp.data[0].embedding
+    except Exception:
+        return []
+
+def _cache_lookup(query: str) -> str:
+    """유사한 이전 응답 검색. 없으면 빈 문자열."""
+    try:
+        import numpy as np
+        q_vec = _embed_query(query)
+        if not q_vec:
+            return ""
+
+        conn = sqlite3.connect(str(_CACHE_DB_PATH))
+        cutoff = (datetime.now().timestamp() - _CACHE_TTL_DAYS * 86400)
+        cutoff_str = datetime.fromtimestamp(cutoff).isoformat()
+        rows = conn.execute(
+            "SELECT id, query_text, embedding, response FROM response_cache WHERE created_at > ?",
+            (cutoff_str,)
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return ""
+
+        q_arr = np.array(q_vec, dtype=np.float32)
+        q_arr /= (np.linalg.norm(q_arr) + 1e-9)
+
+        best_sim, best_row = 0.0, None
+        for row in rows:
+            try:
+                emb = np.array(json.loads(row[2]), dtype=np.float32)
+                emb /= (np.linalg.norm(emb) + 1e-9)
+                sim = float(q_arr @ emb)
+                if sim > best_sim:
+                    best_sim, best_row = sim, row
+            except Exception:
+                continue
+
+        if best_sim >= _CACHE_THRESHOLD and best_row:
+            # hit count 증가
+            conn2 = sqlite3.connect(str(_CACHE_DB_PATH))
+            conn2.execute("UPDATE response_cache SET hit_count = hit_count + 1 WHERE id = ?", (best_row[0],))
+            conn2.commit()
+            conn2.close()
+            return best_row[3]   # 캐시된 응답
+    except Exception:
+        pass
+    return ""
+
+def _cache_store(query: str, response: str):
+    """응답을 캐시에 저장 (도구 미사용 순수 LLM 응답만)"""
+    try:
+        import hashlib
+        q_vec = _embed_query(query)
+        if not q_vec:
+            return
+        qhash = hashlib.md5(query.encode()).hexdigest()
+        conn = sqlite3.connect(str(_CACHE_DB_PATH))
+        conn.execute(
+            "INSERT INTO response_cache (query_hash, query_text, embedding, response, created_at) VALUES (?,?,?,?,?)",
+            (qhash, query[:500], json.dumps(q_vec), response, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
 # 저장 폴더
 _SAVE_DIR = Path(os.path.expanduser("~")) / "Desktop" / "MAESTRO결과"
 _SAVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -681,6 +783,111 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
         return f"[웹 리서치 오류: {e}]"
 
 
+def _tool_meeting_to_notion(audio_path: str = "", transcript: str = "",
+                            meeting_date: str = "", speaker_map: str = "") -> str:
+    """
+    회의 음성 파일 또는 텍스트를 분석해 노션에 자동 기록.
+    audio_path: 음성 파일 경로 (.mp3/.mp4/.wav/.m4a 등)
+    transcript: 직접 텍스트 입력 시 (audio_path 없을 때)
+    meeting_date: 회의 날짜 (기본: 오늘)
+    speaker_map: 화자 매핑 JSON 문자열 '{"SPEAKER_00":"조경일","SPEAKER_01":"소지민"}'
+    """
+    import sys as _sys
+
+    meeting_dir = str(_MEETING_AUTO_DIR)
+    if meeting_dir not in _sys.path:
+        _sys.path.insert(0, meeting_dir)
+
+    if not meeting_date:
+        meeting_date = datetime.now().strftime("%Y-%m-%d")
+
+    # 화자 맵 파싱
+    spk_map: dict = {}
+    if speaker_map:
+        try:
+            spk_map = json.loads(speaker_map)
+        except Exception:
+            pass
+
+    named_transcript = []
+
+    # ── 음성 파일 처리 ────────────────────────────────────────────
+    if audio_path:
+        p = Path(audio_path).expanduser()
+        if not p.exists():
+            return f"[파일 없음: {audio_path}]"
+        try:
+            from services.transcribe import transcribe_audio
+            from services.diarize   import convert_to_wav, diarize_audio, merge_transcript_speakers
+            from services.analyze   import apply_speaker_names, analyze_meeting
+            from services.notion_client import create_meeting_page
+        except ImportError as e:
+            return f"[회의록 모듈 로드 실패: {e}]\n meeting_auto 폴더 확인: {meeting_dir}"
+
+        console.print("  [dim]  음성 변환 중 (WAV)...[/dim]")
+        wav_path = convert_to_wav(str(p))
+
+        console.print("  [dim]  STT 변환 중 (Whisper)...[/dim]")
+        segments = transcribe_audio(wav_path)
+
+        console.print("  [dim]  화자 분리 중...[/dim]")
+        speaker_segments = diarize_audio(wav_path)
+        merged = merge_transcript_speakers(segments, speaker_segments)
+
+        if spk_map:
+            named_transcript = apply_speaker_names(merged, spk_map)
+        else:
+            named_transcript = merged
+
+    # ── 텍스트 직접 입력 ──────────────────────────────────────────
+    elif transcript:
+        try:
+            from services.analyze import analyze_meeting
+            from services.notion_client import create_meeting_page
+        except ImportError as e:
+            return f"[회의록 모듈 로드 실패: {e}]"
+        # 텍스트를 세그먼트로 변환
+        for line in transcript.strip().splitlines():
+            if ":" in line:
+                spk, txt = line.split(":", 1)
+                named_transcript.append({"speaker": spk.strip(), "text": txt.strip()})
+            else:
+                named_transcript.append({"speaker": "발언자", "text": line.strip()})
+    else:
+        return "[audio_path 또는 transcript 중 하나는 필수입니다]"
+
+    if not named_transcript:
+        return "[변환된 내용이 없습니다]"
+
+    console.print(f"  [dim]  Gemini 분석 중 ({len(named_transcript)}개 발언)...[/dim]")
+    try:
+        from services.analyze import analyze_meeting
+        from services.notion_client import create_meeting_page
+    except ImportError as e:
+        return f"[모듈 로드 실패: {e}]"
+
+    analysis = analyze_meeting(named_transcript, meeting_date)
+
+    console.print("  [dim]  노션 페이지 생성 중...[/dim]")
+    page_url = create_meeting_page(analysis)
+
+    if page_url:
+        return f"노션 회의록 생성 완료\n날짜: {meeting_date}\n발언: {len(named_transcript)}개\nURL: {page_url}"
+    else:
+        # URL 없어도 분석 결과 반환
+        teams = analysis.get("teams", {})
+        lines = [f"회의록 분석 완료 ({meeting_date})  — 노션 URL 없음\n"]
+        for team, data in teams.items():
+            items = data.get("agenda_items", [])
+            if items:
+                lines.append(f"[{team}]")
+                for item in items:
+                    lines.append(f"  {item.get('title','')}")
+                    for pt in item.get("points", []):
+                        lines.append(f"    - {pt}")
+        return "\n".join(lines)
+
+
 def _tool_analyze_document(path: str, question: str = "") -> str:
     """
     파일을 읽고 AI로 분석.
@@ -904,6 +1111,11 @@ def _exec_tool(name: str, args: dict) -> str:
                                 args.get("depth", "중간")),
         "save_research":    lambda: _tool_save_research(
                                 args.get("formats", ["excel"])),
+        "meeting_to_notion":  lambda: _tool_meeting_to_notion(
+                                args.get("audio_path", ""),
+                                args.get("transcript", ""),
+                                args.get("meeting_date", ""),
+                                args.get("speaker_map", "")),
         "analyze_document":   lambda: _tool_analyze_document(
                                 args.get("path", ""),
                                 args.get("question", "")),
@@ -1030,6 +1242,20 @@ _TOOL_DEFS = [
             "model":  {"type": "string", "enum": ["deepseek", "claude", "grok", "gpt-4o"]},
             "prompt": {"type": "string"}
         }, "required": ["model", "prompt"]}
+    }},
+    {"type": "function", "function": {
+        "name": "meeting_to_notion",
+        "description": (
+            "회의 음성 파일 또는 회의 텍스트를 분석해 노션에 자동으로 회의록을 작성합니다. "
+            "음성 파일(.mp3/.mp4/.wav/.m4a)을 주면 STT→화자분리→분석→노션 전체 자동 처리. "
+            "'회의록 정리해줘', '회의 내용 노션에 올려줘' 같은 요청에 사용하세요."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "audio_path":   {"type": "string", "description": "음성 파일 전체 경로 (mp3/mp4/wav/m4a)"},
+            "transcript":   {"type": "string", "description": "텍스트 직접 입력 (audio_path 없을 때). 형식: '화자: 내용\\n화자: 내용'"},
+            "meeting_date": {"type": "string", "description": "회의 날짜 (예: 2026-04-17). 기본: 오늘"},
+            "speaker_map":  {"type": "string", "description": "화자 이름 매핑 JSON '{\"SPEAKER_00\":\"조경일\",\"SPEAKER_01\":\"소지민\"}'"}
+        }, "required": []}
     }},
     {"type": "function", "function": {
         "name": "analyze_document",
@@ -1173,6 +1399,10 @@ Carrd, Framer, n8n, Supabase, Vercel, Notion, Claude Code 등
 
 ## 도구 목록
 
+**meeting_to_notion** — 회의록 자동화
+음성 파일 경로를 주면 STT→화자 분리→AI 분석→노션 페이지 생성까지 전부 자동.
+회의 내용을 텍스트로 붙여줘도 됩니다.
+
 **analyze_document** — 파일/문서/이미지 분석
 PDF, Word, Excel, CSV, 이미지, 코드 파일 전부 분석 가능.
 "이 파일 요약해줘", "이 이미지 텍스트 추출해줘", "엑셀 데이터 분석해줘" 같은 요청에 사용.
@@ -1244,6 +1474,13 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     if not oai:
         return "[OpenAI API 키가 없어 MAESTRO를 실행할 수 없습니다]"
 
+    # ── 응답 캐시 확인 (도구 불필요한 순수 지식 질문) ────────────────
+    if not history:   # 첫 턴만 캐시 적용 (문맥 없을 때)
+        cached = _cache_lookup(user_input)
+        if cached:
+            console.print("  [dim][CACHE] 캐시 응답 사용[/dim]")
+            return cached
+
     messages = [{"role": "system", "content": _build_system_prompt()}]
     messages += history[-40:]   # 로컬엔 전체 보존, GPT-4o엔 최근 20턴(40개 메시지)
     # 영어 입력이어도 한국어 응답 강제
@@ -1274,7 +1511,12 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
 
         # 도구 호출 없음 → 최종 답변
         if not msg.tool_calls:
-            return msg.content or ""
+            final = msg.content or ""
+            # 첫 턴 + 도구 미사용 응답만 캐시 저장 (순수 지식 응답)
+            if iteration == 1 and not history and final:
+                import threading as _t
+                _t.Thread(target=_cache_store, args=(user_input, final), daemon=True).start()
+            return final
 
         # 도구 호출 처리
         messages.append({"role": "assistant",
@@ -1336,6 +1578,7 @@ _TOOL_ICONS = {
     "save_research":   "[SAVE]",
     "generate_image":    "[IMAGE]",
     "create_chart":      "[CHART]",
+    "meeting_to_notion": "[MEETING]",
     "analyze_document":  "[DOC]",
     "lookup_tool":       "[TOOL]",
     "vibe_coding_guide": "[VIBE]",
@@ -1372,6 +1615,10 @@ def _show_tool_call(name: str, args: dict):
     elif name == "save_research":
         fmts = ", ".join(args.get("formats", []))
         console.print(f"  {icon} [dim]{fmts} 저장 중...[/dim]")
+    elif name == "meeting_to_notion":
+        src = args.get("audio_path") or args.get("transcript", "")[:30]
+        dt  = args.get("meeting_date", "오늘")
+        console.print(f"  [MEETING] [bold cyan]{dt}[/bold cyan] [dim]{src[:40]}[/dim]")
     elif name == "analyze_document":
         fname = Path(args.get("path", "")).name
         q     = args.get("question", "")
