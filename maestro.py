@@ -93,28 +93,75 @@ _last_research: dict = {}
 _SAVE_DIR = Path(os.path.expanduser("~")) / "Desktop" / "MAESTRO결과"
 _SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
-# 세션 히스토리 경로
-_HISTORY_PATH = Path(os.path.expanduser("~")) / ".maestro_history.json"
+# ── 세션 로그 ─────────────────────────────────────────────────────
+_SESSIONS_DIR = Path(os.path.expanduser("~")) / ".maestro" / "sessions"
+_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+# 하위 호환 — 구버전 단일 파일 마이그레이션
+_LEGACY_HISTORY = Path(os.path.expanduser("~")) / ".maestro_history.json"
+
+_current_session_id: str = ""
 
 
-def _save_history(history: list):
-    """대화 히스토리 로컬 저장"""
+def _new_session_id() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _session_path(sid: str) -> Path:
+    return _SESSIONS_DIR / f"{sid}.json"
+
+
+def _save_session(sid: str, history: list, first_msg: str = ""):
+    """현재 세션 전체를 로컬에 저장 (무제한 로그)"""
     try:
-        data = {"saved_at": datetime.now().isoformat(), "history": history[-20:]}
-        _HISTORY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        path = _session_path(sid)
+        data: dict = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data["session_id"]  = sid
+        data["last_active"] = datetime.now().isoformat()
+        data["turn_count"]  = len(history) // 2
+        if not data.get("started_at"):
+            data["started_at"] = datetime.now().isoformat()
+        if not data.get("first_message") and first_msg:
+            data["first_message"] = first_msg[:60]
+        data["messages"] = history          # 전체 저장 (무제한)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
 
-def _load_history() -> tuple:
-    """저장된 히스토리 로드. (history, saved_at) 반환"""
+def _load_session(sid: str) -> list:
+    """세션 ID로 전체 히스토리 로드"""
     try:
-        if _HISTORY_PATH.exists():
-            data = json.loads(_HISTORY_PATH.read_text(encoding="utf-8"))
-            return data.get("history", []), data.get("saved_at", "")
+        path = _session_path(sid)
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data.get("messages", [])
     except Exception:
         pass
-    return [], ""
+    return []
+
+
+def _list_sessions(n: int = 10) -> list:
+    """최근 세션 목록 반환. [{sid, started_at, turn_count, first_message}, ...]"""
+    sessions = []
+    for p in sorted(_SESSIONS_DIR.glob("*.json"), reverse=True)[:n]:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            sessions.append({
+                "sid":           data.get("session_id", p.stem),
+                "started_at":    data.get("started_at", "")[:16].replace("T", " "),
+                "last_active":   data.get("last_active", "")[:16].replace("T", " "),
+                "turn_count":    data.get("turn_count", 0),
+                "first_message": data.get("first_message", "(내용 없음)"),
+            })
+        except Exception:
+            continue
+    return sessions
 
 # ── 뇌 에이전트 ──────────────────────────────────────────────────
 _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
@@ -1188,7 +1235,7 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
         return "[OpenAI API 키가 없어 MAESTRO를 실행할 수 없습니다]"
 
     messages = [{"role": "system", "content": _build_system_prompt()}]
-    messages += history
+    messages += history[-40:]   # 로컬엔 전체 보존, GPT-4o엔 최근 20턴(40개 메시지)
     # 영어 입력이어도 한국어 응답 강제
     content = user_input
     if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
@@ -1389,23 +1436,58 @@ def main():
         console.print("[red]OpenAI API 키가 없습니다. _local_keys.py 또는 환경변수를 확인하세요.[/red]")
         return
 
-    # 세션 이어가기
-    prev_history, saved_at = _load_history()
-    history = []
-    if prev_history:
-        saved_short = saved_at[:16].replace("T", " ") if saved_at else ""
-        console.print(f"[dim]이전 대화가 있습니다 ({saved_short})[/dim]")
+    # ── 세션 선택 ─────────────────────────────────────────────────
+    global _current_session_id
+    history: list = []
+    sessions = _list_sessions(5)
+
+    # 구버전 단일 파일 마이그레이션
+    if not sessions and _LEGACY_HISTORY.exists():
         try:
-            if Confirm.ask("  이어서 대화할까요?", default=True):
-                history = prev_history
-                console.print(f"  [green]이전 대화 {len(history)//2}턴 불러옴[/green]\n")
-            else:
-                _HISTORY_PATH.unlink(missing_ok=True)
-                console.print()
+            old = json.loads(_LEGACY_HISTORY.read_text(encoding="utf-8"))
+            old_msgs = old.get("history", [])
+            if old_msgs:
+                _current_session_id = _new_session_id()
+                _save_session(_current_session_id, old_msgs, "(이전 버전 기록)")
+                _LEGACY_HISTORY.unlink(missing_ok=True)
+                sessions = _list_sessions(5)
         except Exception:
             pass
 
-    console.print("[dim]무엇이든 물어보세요. 'exit'로 종료.[/dim]\n")
+    if sessions:
+        last = sessions[0]
+        console.print(f"[dim]마지막 대화: {last['last_active']}  {last['turn_count']}턴  \"{last['first_message']}\"[/dim]")
+        try:
+            choice = Prompt.ask(
+                "  [dim]이어서 대화(Enter) / 새 대화(n) / 목록(l)[/dim]",
+                default="y"
+            ).strip().lower()
+        except Exception:
+            choice = "y"
+
+        if choice == "l":
+            _show_sessions(sessions)
+            try:
+                idx = Prompt.ask("  불러올 번호 (Enter = 새 대화)", default="0").strip()
+                if idx.isdigit() and 1 <= int(idx) <= len(sessions):
+                    sid = sessions[int(idx)-1]["sid"]
+                    history = _load_session(sid)
+                    _current_session_id = sid
+                    console.print(f"  [green]{len(history)//2}턴 불러옴[/green]\n")
+                else:
+                    _current_session_id = _new_session_id()
+            except Exception:
+                _current_session_id = _new_session_id()
+        elif choice in ("", "y", "yes"):
+            history = _load_session(last["sid"])
+            _current_session_id = last["sid"]
+            console.print(f"  [green]{len(history)//2}턴 불러옴[/green]\n")
+        else:
+            _current_session_id = _new_session_id()
+    else:
+        _current_session_id = _new_session_id()
+
+    console.print(f"[dim]세션: {_current_session_id}  |  무엇이든 물어보세요. 'exit'로 종료.[/dim]\n")
 
     while True:
         try:
@@ -1430,8 +1512,22 @@ def main():
             continue
         if user_input.strip() == "/clear":
             history = []
-            _HISTORY_PATH.unlink(missing_ok=True)
-            console.print("[dim]대화 기록 초기화됨[/dim]\n")
+            _current_session_id = _new_session_id()
+            console.print(f"[dim]새 세션 시작: {_current_session_id}[/dim]\n")
+            continue
+        if user_input.strip() == "/sessions":
+            _show_sessions(_list_sessions(10))
+            try:
+                idx = Prompt.ask("  불러올 번호 (Enter = 취소)", default="0").strip()
+                if idx.isdigit() and 1 <= int(idx) <= 10:
+                    slist = _list_sessions(10)
+                    if int(idx) <= len(slist):
+                        sid = slist[int(idx)-1]["sid"]
+                        history = _load_session(sid)
+                        _current_session_id = sid
+                        console.print(f"  [green]{len(history)//2}턴 불러옴[/green]\n")
+            except Exception:
+                pass
             continue
 
         console.print()
@@ -1449,12 +1545,28 @@ def main():
         ))
         console.print()
 
-        # 히스토리 누적 & 저장 (마지막 10턴만)
+        # 히스토리 누적 & 세션 저장 (전체 무제한 로컬 보존)
+        first_msg = user_input if len(history) == 0 else ""
         history.append({"role": "user",      "content": user_input})
         history.append({"role": "assistant", "content": response})
-        if len(history) > 20:
-            history = history[-20:]
-        _save_history(history)
+        _save_session(_current_session_id, history, first_msg)
+
+        # GPT-4o 컨텍스트는 최근 20턴만 (비용/속도 최적화)
+        # history 자체는 전체 유지, run_agent에서 슬라이싱
+
+
+def _show_sessions(sessions: list):
+    from rich.table import Table
+    t = Table(title="저장된 세션", border_style="dim")
+    t.add_column("번호", style="dim", width=4)
+    t.add_column("시작", width=14)
+    t.add_column("마지막 활동", width=14)
+    t.add_column("턴", width=4)
+    t.add_column("첫 메시지")
+    for i, s in enumerate(sessions, 1):
+        t.add_row(str(i), s["started_at"], s["last_active"],
+                  str(s["turn_count"]), s["first_message"][:40])
+    console.print(t)
 
 
 def _show_model_status():
@@ -1485,11 +1597,12 @@ def _show_cache():
 def _show_help():
     console.print(Panel(
         "[bold]사용 가능한 명령[/bold]\n\n"
-        "  /models  : 연결된 LLM 상태\n"
-        "  /cache   : 오케스트레이터 캐시 보기\n"
-        "  /clear   : 대화 기록 초기화\n"
-        "  /help    : 이 도움말\n"
-        "  exit     : 종료\n\n"
+        "  /models   : 연결된 LLM 상태\n"
+        "  /cache    : 오케스트레이터 캐시 보기\n"
+        "  /sessions : 과거 대화 목록 & 불러오기\n"
+        "  /clear    : 새 세션 시작\n"
+        "  /help     : 이 도움말\n"
+        "  exit      : 종료\n\n"
         "[bold]예시 요청[/bold]\n\n"
         "  'C:\\Users\\나\\Desktop\\보고서.pdf 분석해줘'\n"
         "  '스크린샷.png 텍스트 추출해줘'\n"
