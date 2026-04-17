@@ -29,10 +29,11 @@ def _check_update():
                     dst.write(src.read())
             except Exception:
                 pass
-        print("  업데이트 완료. 재시작합니다...\n")
-        # Windows에서 os.execv 대신 subprocess로 재시작
-        import subprocess
-        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        print("  업데이트 완료. 자동 재시작합니다...\n")
+        import subprocess, time
+        time.sleep(1)
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
+                         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0)
         sys.exit(0)
     except Exception:
         pass  # 오프라인이거나 실패 시 그냥 실행
