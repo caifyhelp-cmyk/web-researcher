@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -18,11 +18,13 @@ def _check_update():
             return
         print(f"  업데이트 발견: {VERSION} → {latest}  다운로드 중...")
         here = os.path.dirname(os.path.abspath(__file__))
-        for gh_name, local_name in [("app_local.py",        os.path.basename(__file__)),
-                                     ("web_researcher.py",   "web_researcher.py"),
-                                     ("orchestrator.py",     "orchestrator.py"),
-                                     ("feedback_collector.py", "feedback_collector.py"),
-                                     ("maestro.py",          "maestro.py")]:
+        for gh_name, local_name in [("app_local.py",          os.path.basename(__file__)),
+                                     ("web_researcher.py",    "web_researcher.py"),
+                                     ("orchestrator.py",      "orchestrator.py"),
+                                     ("feedback_collector.py","feedback_collector.py"),
+                                     ("maestro.py",           "maestro.py"),
+                                     ("pattern_collector.py", "pattern_collector.py"),
+                                     ("tools_kb.json",        "tools_kb.json")]:
             try:
                 tmp, _ = urllib.request.urlretrieve(f"{_GITHUB_RAW}/{gh_name}")
                 with open(tmp, "rb") as src, \
