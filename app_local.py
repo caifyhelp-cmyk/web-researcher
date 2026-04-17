@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.4.4"
+VERSION = "2.5.0"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -1332,4 +1332,10 @@ def main():
             break
 
 if __name__ == "__main__":
-    main()
+    # MAESTRO로 통합 — app_local.py는 리서치 파이프라인 모듈로 동작
+    try:
+        import maestro
+        maestro.main()
+    except ImportError:
+        # maestro.py 없으면 기존 방식으로 실행 (하위 호환)
+        main()

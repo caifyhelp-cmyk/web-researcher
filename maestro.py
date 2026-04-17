@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -57,6 +57,13 @@ try:
     _ORCH = True
 except Exception:
     _ORCH = False
+
+# ── 웹 리서치 파이프라인 (app_local.py 통합) ─────────────────────
+try:
+    import app_local as _rl
+    _RL = True
+except Exception:
+    _RL = False
 
 # ── 뇌 에이전트 ──────────────────────────────────────────────────
 _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
@@ -275,6 +282,55 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
     return f"[알 수 없는 모델: {model}]"
 
 
+def _tool_web_research(topic: str, depth: str = "중간") -> str:
+    """
+    기존 웹 리서치 파이프라인 전체 실행.
+    make_plan → 웹 수집 → 구조화 추출 → 시장 분석 → 전략 인사이트
+    결과를 텍스트 요약으로 반환.
+    """
+    if not _RL:
+        return "[웹 리서치 모듈 로드 실패]"
+    try:
+        console.print(f"  [dim]  플랜 수립 중...[/dim]")
+        plan = _rl.make_plan(topic, depth)
+        plan["_depth"] = depth
+
+        console.print(f"  [dim]  웹 수집 중 (쿼리 {len(plan.get('queries', []))}개)...[/dim]")
+        results = _rl.run_research(plan)
+
+        console.print(f"  [dim]  {len(results)}개 페이지 분석 중...[/dim]")
+        analysis = _rl.analyze(topic, plan, results)
+
+        # 텍스트 요약 구성
+        lines = []
+        lines.append(f"## 리서치 결과: {topic}")
+        lines.append(f"수집 페이지: {len(results)}개\n")
+
+        summary = analysis.get("summary", "")
+        if summary:
+            lines.append(f"### 시장 현황\n{summary}\n")
+
+        strategy = analysis.get("strategy", "")
+        if strategy:
+            lines.append(f"### 전략 인사이트\n{strategy}\n")
+
+        per_url = analysis.get("per_url", [])
+        if per_url:
+            lines.append("### 주요 업체")
+            for item in per_url[:8]:
+                name = item.get("업체명") or item.get("name") or ""
+                url  = item.get("url", "")
+                if name:
+                    lines.append(f"- {name}  {url}")
+
+        # 파일로 저장
+        _rl.save_results(topic, plan, analysis, results)
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[웹 리서치 오류: {e}]"
+
+
 def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> str:
     """
     실제 Claude Code CLI를 subprocess로 호출.
@@ -354,6 +410,9 @@ def _exec_tool(name: str, args: dict) -> str:
                                 args.get("prompt", ""),
                                 args.get("cwd", "."),
                                 args.get("timeout", 180)),
+        "web_research":     lambda: _tool_web_research(
+                                args.get("topic", ""),
+                                args.get("depth", "중간")),
     }
     fn = dispatch.get(name)
     if fn:
@@ -464,6 +523,21 @@ _TOOL_DEFS = [
         }, "required": ["model", "prompt"]}
     }},
     {"type": "function", "function": {
+        "name": "web_research",
+        "description": (
+            "웹 리서치 전체 파이프라인을 실행합니다. "
+            "경쟁사 분석, 시장 조사, 업체 비교, 트렌드 파악 등 "
+            "특정 주제에 대해 웹을 자동 수집하고 구조화 분석까지 완료합니다. "
+            "결과는 자동으로 파일로 저장됩니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "topic": {"type": "string", "description": "조사할 주제"},
+            "depth": {"type": "string",
+                      "description": "조사 깊이: '빠른' (5개 URL), '중간' (10개), '깊은' (20개)",
+                      "enum": ["빠른", "중간", "깊은"]}
+        }, "required": ["topic"]}
+    }},
+    {"type": "function", "function": {
         "name": "ask_claude_code",
         "description": (
             "실제 Claude Code CLI를 호출합니다. "
@@ -492,6 +566,10 @@ _SYSTEM = """당신은 MAESTRO입니다.
 ---
 
 ## 당신이 가진 능력들
+
+**web_research** — 웹 리서치 전체 파이프라인입니다.
+경쟁사 분석, 시장 조사, 업체 비교 등 특정 주제를 깊게 파야 할 때 씁니다.
+자동으로 검색 쿼리 생성 → 웹 수집 → 구조화 추출 → 시장 분석 → 전략 인사이트까지 완료하고 파일로 저장합니다.
 
 **ask_claude_code** — 실제 Claude Code CLI를 호출합니다.
 파일을 만들고, 코드를 짜고, 버그를 고치고, 테스트까지 돌립니다.
@@ -636,6 +714,7 @@ _TOOL_ICONS = {
     "ask_brain":       "[BRAIN]",
     "ask_specialist":  "[LLM]",
     "ask_claude_code": "[CLAUDE CODE]",
+    "web_research":    "[RESEARCH]",
 }
 
 def _show_tool_call(name: str, args: dict):
@@ -662,6 +741,10 @@ def _show_tool_call(name: str, args: dict):
         preview = args.get("prompt", "")[:60]
         console.print(f"  {icon} [bold cyan]{preview}...[/bold cyan]")
         console.print(f"    [dim]작업 경로: {cwd}[/dim]")
+    elif name == "web_research":
+        topic = args.get("topic", "")
+        depth = args.get("depth", "중간")
+        console.print(f"  {icon} [bold green]{topic}[/bold green]  [{depth}]")
     elif name in ("glob_search", "grep_search"):
         console.print(f"  {icon} [dim]검색:[/dim] {args.get('pattern', '')}")
     elif name == "list_dir":
