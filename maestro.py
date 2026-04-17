@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -42,6 +42,7 @@ OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEEPSEEK_KEY  = os.getenv("DEEPSEEK_API_KEY", "")
 GROK_KEY      = os.getenv("GROK_API_KEY", "")
+VERCEL_TOKEN  = os.getenv("VERCEL_TOKEN", "")
 
 from openai    import OpenAI
 from anthropic import Anthropic
@@ -790,6 +791,141 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
         return f"[웹 리서치 오류: {e}]"
 
 
+def _tool_vercel_deploy(project_dir: str, project_name: str = "",
+                        framework: str = "") -> str:
+    """
+    로컬 폴더를 Vercel에 배포. 라이브 URL 반환.
+    project_dir : 배포할 폴더 경로 (HTML/CSS/JS 또는 Next.js 등)
+    project_name: Vercel 프로젝트 이름 (영문 소문자, 기본: 폴더명)
+    framework   : 프레임워크 힌트 (nextjs / react / vue / svelte / 비워두면 정적)
+    """
+    token = VERCEL_TOKEN or os.getenv("VERCEL_TOKEN", "")
+    if not token:
+        return (
+            "[Vercel 토큰 없음]\n"
+            "1. https://vercel.com/account/tokens 에서 토큰 발급\n"
+            "2. _local_keys.py 의 VERCEL_TOKEN 에 입력 후 재시작"
+        )
+
+    p = Path(project_dir).expanduser().resolve()
+    if not p.exists():
+        return f"[폴더 없음: {project_dir}]"
+
+    name = (project_name or p.name).lower()
+    name = re.sub(r"[^a-z0-9\-]", "-", name)[:50].strip("-") or "maestro-deploy"
+
+    # ── 파일 수집 ─────────────────────────────────────────────────
+    files_payload = []
+    skip_dirs  = {".git", "node_modules", ".next", "__pycache__", "dist", ".vercel"}
+    skip_exts  = {".pyc", ".pyo", ".DS_Store"}
+    max_bytes  = 5 * 1024 * 1024   # 5MB 초과 파일 건너뜀
+
+    for fpath in p.rglob("*"):
+        if fpath.is_dir():
+            continue
+        if any(part in skip_dirs for part in fpath.parts):
+            continue
+        if fpath.suffix in skip_exts:
+            continue
+        rel = fpath.relative_to(p).as_posix()
+        try:
+            raw = fpath.read_bytes()
+            if len(raw) > max_bytes:
+                continue
+            import base64 as _b64
+            files_payload.append({
+                "file": rel,
+                "data": _b64.b64encode(raw).decode(),
+                "encoding": "base64"
+            })
+        except Exception:
+            continue
+
+    if not files_payload:
+        return "[배포할 파일이 없습니다]"
+
+    console.print(f"  [dim]  {len(files_payload)}개 파일 업로드 중...[/dim]")
+
+    # ── 배포 요청 ─────────────────────────────────────────────────
+    fw_map = {
+        "nextjs": "nextjs", "next": "nextjs",
+        "react":  "create-react-app",
+        "vue":    "vue",
+        "svelte": "svelte",
+        "vite":   "vite",
+    }
+    fw = fw_map.get((framework or "").lower(), None)
+
+    payload: dict = {
+        "name":   name,
+        "files":  files_payload,
+        "target": "production",
+        "projectSettings": {}
+    }
+    if fw:
+        payload["projectSettings"]["framework"] = fw
+
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    req  = urllib.request.Request(
+        "https://api.vercel.com/v13/deployments",
+        data=body, method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        err = e.read().decode(errors="replace")
+        return f"[Vercel API 오류 {e.code}] {err[:300]}"
+    except Exception as e:
+        return f"[배포 오류: {e}]"
+
+    deploy_id = data.get("id", "")
+    url = data.get("url", "")
+    alias_url = f"https://{url}" if url and not url.startswith("http") else url
+
+    if not deploy_id:
+        return f"[배포 실패] {json.dumps(data, ensure_ascii=False)[:300]}"
+
+    # ── 배포 완료 대기 (최대 3분) ─────────────────────────────────
+    console.print(f"  [dim]  배포 중... (최대 3분)[/dim]")
+    for _ in range(36):
+        time.sleep(5)
+        try:
+            chk = urllib.request.Request(
+                f"https://api.vercel.com/v13/deployments/{deploy_id}",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            with urllib.request.urlopen(chk, timeout=10) as r2:
+                status_data = json.loads(r2.read())
+            state = status_data.get("readyState", status_data.get("status", ""))
+            if state in ("READY", "ready"):
+                live_url = status_data.get("url", url)
+                if live_url and not live_url.startswith("http"):
+                    live_url = f"https://{live_url}"
+                return (
+                    f"배포 완료!\n"
+                    f"URL: {live_url}\n"
+                    f"프로젝트: {name}\n"
+                    f"파일: {len(files_payload)}개"
+                )
+            if state in ("ERROR", "CANCELED"):
+                err_msg = status_data.get("errorMessage", "")
+                return f"[배포 실패] 상태: {state}  {err_msg}"
+        except Exception:
+            continue
+
+    # 타임아웃 — URL은 있음
+    return (
+        f"배포 요청 완료 (상태 확인 타임아웃)\n"
+        f"URL: {alias_url}\n"
+        f"Vercel 대시보드에서 확인하세요."
+    )
+
+
 def _tool_meeting_to_notion(audio_path: str = "", transcript: str = "",
                             meeting_date: str = "", speaker_map: str = "") -> str:
     """
@@ -1141,6 +1277,10 @@ def _exec_tool(name: str, args: dict) -> str:
                                 args.get("x_label", ""),
                                 args.get("y_label", ""),
                                 args.get("filename", "")),
+        "vercel_deploy":    lambda: _tool_vercel_deploy(
+                                args.get("project_dir", ""),
+                                args.get("project_name", ""),
+                                args.get("framework", "")),
     }
     fn = dispatch.get(name)
     if fn:
@@ -1361,6 +1501,20 @@ _TOOL_DEFS = [
             "timeout": {"type": "integer", "description": "최대 대기 시간(초, 기본 180)"}
         }, "required": ["prompt"]}
     }},
+    {"type": "function", "function": {
+        "name": "vercel_deploy",
+        "description": (
+            "로컬 폴더를 Vercel에 배포하고 라이브 URL을 반환합니다. "
+            "HTML/CSS/JS 정적 사이트, Next.js, React, Vue, Svelte 등 지원. "
+            "랜딩페이지, 포트폴리오, 웹앱 등을 바로 배포할 때 사용하세요. "
+            "VERCEL_TOKEN이 없으면 발급 안내를 합니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "project_dir":  {"type": "string", "description": "배포할 폴더 경로"},
+            "project_name": {"type": "string", "description": "Vercel 프로젝트 이름 (영문 소문자, 기본: 폴더명)"},
+            "framework":    {"type": "string", "description": "프레임워크: nextjs / react / vue / svelte / vite / 비워두면 정적 HTML"}
+        }, "required": ["project_dir"]}
+    }},
 ]
 
 
@@ -1405,6 +1559,12 @@ Carrd, Framer, n8n, Supabase, Vercel, Notion, Claude Code 등
 ---
 
 ## 도구 목록
+
+**vercel_deploy** — Vercel 무료 배포
+로컬 폴더를 Vercel에 배포하고 라이브 URL을 즉시 반환합니다.
+HTML/CSS/JS 정적 사이트, Next.js, React, Vue, Svelte 모두 지원.
+"이 폴더 배포해줘", "랜딩페이지 올려줘" 같은 요청에 사용하세요.
+VERCEL_TOKEN이 없으면 발급 경로를 안내합니다.
 
 **meeting_to_notion** — 회의록 자동화
 음성 파일 경로를 주면 STT→화자 분리→AI 분석→노션 페이지 생성까지 전부 자동.
@@ -1595,6 +1755,7 @@ _TOOL_ICONS = {
     "analyze_document":  "[DOC]",
     "lookup_tool":       "[TOOL]",
     "vibe_coding_guide": "[VIBE]",
+    "vercel_deploy":     "[VERCEL]",
 }
 
 def _show_tool_call(name: str, args: dict):
@@ -1648,6 +1809,10 @@ def _show_tool_call(name: str, args: dict):
         ct = args.get("chart_type", "")
         t  = args.get("title", "차트")
         console.print(f"  {icon} [bold green]{ct} - {t}[/bold green]")
+    elif name == "vercel_deploy":
+        d = args.get("project_dir", "")
+        n = args.get("project_name", "") or Path(d).name
+        console.print(f"  {icon} [bold cyan]{n}[/bold cyan] [dim]배포 중...[/dim]")
     elif name in ("glob_search", "grep_search"):
         console.print(f"  {icon} [dim]검색:[/dim] {args.get('pattern', '')}")
     elif name == "list_dir":
