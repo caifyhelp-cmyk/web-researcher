@@ -97,8 +97,8 @@ import sqlite3
 
 _CACHE_DB_PATH = Path(os.path.expanduser("~")) / ".maestro" / "response_cache.db"
 _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-_CACHE_THRESHOLD = 0.92   # 코사인 유사도 임계값
-_CACHE_TTL_DAYS  = 7      # 캐시 유효 기간
+_CACHE_HIT_THRESHOLD  = 0.95   # 이 이상: 캐시를 참고로 주입 (GPT-4o가 검증 후 활용)
+_CACHE_TTL_DAYS       = 14     # 캐시 유효 기간 (2주)
 
 def _cache_init():
     conn = sqlite3.connect(str(_CACHE_DB_PATH))
@@ -128,17 +128,23 @@ def _embed_query(text: str) -> list:
     except Exception:
         return []
 
-def _cache_lookup(query: str) -> str:
-    """유사한 이전 응답 검색. 없으면 빈 문자열."""
+def _cache_lookup(query: str) -> tuple:
+    """
+    유사한 이전 응답 검색.
+    반환: (cached_response: str, similarity: float)
+    similarity >= _CACHE_HIT_THRESHOLD 이면 참고로 활용 가능.
+    없으면 ("", 0.0)
+    """
     try:
         import numpy as np
         q_vec = _embed_query(query)
         if not q_vec:
-            return ""
+            return "", 0.0
 
         conn = sqlite3.connect(str(_CACHE_DB_PATH))
-        cutoff = (datetime.now().timestamp() - _CACHE_TTL_DAYS * 86400)
-        cutoff_str = datetime.fromtimestamp(cutoff).isoformat()
+        cutoff_str = datetime.fromtimestamp(
+            datetime.now().timestamp() - _CACHE_TTL_DAYS * 86400
+        ).isoformat()
         rows = conn.execute(
             "SELECT id, query_text, embedding, response FROM response_cache WHERE created_at > ?",
             (cutoff_str,)
@@ -146,7 +152,7 @@ def _cache_lookup(query: str) -> str:
         conn.close()
 
         if not rows:
-            return ""
+            return "", 0.0
 
         q_arr = np.array(q_vec, dtype=np.float32)
         q_arr /= (np.linalg.norm(q_arr) + 1e-9)
@@ -162,16 +168,17 @@ def _cache_lookup(query: str) -> str:
             except Exception:
                 continue
 
-        if best_sim >= _CACHE_THRESHOLD and best_row:
-            # hit count 증가
+        if best_sim >= _CACHE_HIT_THRESHOLD and best_row:
             conn2 = sqlite3.connect(str(_CACHE_DB_PATH))
-            conn2.execute("UPDATE response_cache SET hit_count = hit_count + 1 WHERE id = ?", (best_row[0],))
+            conn2.execute("UPDATE response_cache SET hit_count = hit_count + 1 WHERE id = ?",
+                          (best_row[0],))
             conn2.commit()
             conn2.close()
-            return best_row[3]   # 캐시된 응답
+            return best_row[3], best_sim
+
     except Exception:
         pass
-    return ""
+    return "", 0.0
 
 def _cache_store(query: str, response: str):
     """응답을 캐시에 저장 (도구 미사용 순수 LLM 응답만)"""
@@ -1474,14 +1481,19 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     if not oai:
         return "[OpenAI API 키가 없어 MAESTRO를 실행할 수 없습니다]"
 
-    # ── 응답 캐시 확인 (도구 불필요한 순수 지식 질문) ────────────────
-    if not history:   # 첫 턴만 캐시 적용 (문맥 없을 때)
-        cached = _cache_lookup(user_input)
-        if cached:
-            console.print("  [dim][CACHE] 캐시 응답 사용[/dim]")
-            return cached
+    # ── 응답 캐시: 유사 답변을 참고로 주입 (bypass 아님) ─────────────
+    cache_hint = ""
+    if not history:   # 첫 턴에만 (문맥 없을 때)
+        cached_resp, sim = _cache_lookup(user_input)
+        if cached_resp:
+            cache_hint = (
+                f"\n\n[참고: 이전에 유사한 질문(유사도 {sim:.0%})에 아래와 같이 답한 적이 있습니다. "
+                f"현재 질문에 정확히 맞으면 참고하고, 다르거나 정보가 업데이트됐으면 수정해서 답하세요.]\n"
+                f"{cached_resp[:800]}"
+            )
+            console.print(f"  [dim][CACHE] 유사 답변 참고 주입 (유사도 {sim:.0%})[/dim]")
 
-    messages = [{"role": "system", "content": _build_system_prompt()}]
+    messages = [{"role": "system", "content": _build_system_prompt() + cache_hint}]
     messages += history[-40:]   # 로컬엔 전체 보존, GPT-4o엔 최근 20턴(40개 메시지)
     # 영어 입력이어도 한국어 응답 강제
     content = user_input
@@ -1512,8 +1524,9 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
         # 도구 호출 없음 → 최종 답변
         if not msg.tool_calls:
             final = msg.content or ""
-            # 첫 턴 + 도구 미사용 응답만 캐시 저장 (순수 지식 응답)
-            if iteration == 1 and not history and final:
+            # 첫 턴 + 도구 미사용 응답만 캐시 저장
+            # (웹 검색/파일/리서치 결과는 캐시 안 함 — 항상 최신 데이터 필요)
+            if iteration == 1 and not history and final and len(final) > 50:
                 import threading as _t
                 _t.Thread(target=_cache_store, args=(user_input, final), daemon=True).start()
             return final
