@@ -65,6 +65,9 @@ try:
 except Exception:
     _RL = False
 
+# 마지막 리서치 결과 캐시 (save_research 도구에서 재사용)
+_last_research: dict = {}
+
 # ── 뇌 에이전트 ──────────────────────────────────────────────────
 _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
 
@@ -282,6 +285,57 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
     return f"[알 수 없는 모델: {model}]"
 
 
+def _tool_save_research(formats: list) -> str:
+    """
+    마지막 리서치 결과를 원하는 형식으로 저장.
+    formats: ["excel"], ["pdf"], ["ppt"], ["excel","pdf","ppt"] 등 조합 가능
+    """
+    if not _last_research:
+        return "[저장할 리서치 결과가 없습니다. 먼저 리서치를 실행하세요.]"
+    if not _RL:
+        return "[리서치 모듈 로드 실패]"
+
+    import re as _re
+    from datetime import datetime as _dt
+
+    topic    = _last_research.get("topic", "리서치")
+    plan     = _last_research.get("plan", {})
+    analysis = _last_research.get("analysis", {})
+    results  = _last_research.get("results", [])
+
+    ts   = _dt.now().strftime("%Y%m%d_%H%M")
+    safe = _re.sub(r'[^\w가-힣]', '_', topic)[:30]
+    base = f"리서치_{safe}_{ts}"
+    saved = []
+
+    fmt = [f.lower() for f in formats]
+
+    if "excel" in fmt:
+        try:
+            p = _rl._save_excel(base, topic, analysis, results)
+            if p: saved.append(f"Excel: {p}")
+        except Exception as e:
+            saved.append(f"Excel 실패: {e}")
+
+    if "pdf" in fmt:
+        try:
+            p = _rl._save_pdf(base, topic, analysis)
+            if p: saved.append(f"PDF: {p}")
+        except Exception as e:
+            saved.append(f"PDF 실패: {e}")
+
+    if "ppt" in fmt:
+        try:
+            p = _rl._save_ppt(base, topic, analysis)
+            if p: saved.append(f"PPT: {p}")
+        except Exception as e:
+            saved.append(f"PPT 실패: {e}")
+
+    if not saved:
+        return "[저장된 파일 없음 — excel, pdf, ppt 중 하나 이상 지정하세요]"
+    return "저장 완료:\n" + "\n".join(saved)
+
+
 def _tool_web_research(topic: str, depth: str = "중간") -> str:
     """
     기존 웹 리서치 파이프라인 전체 실행.
@@ -323,19 +377,13 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
                 if name:
                     lines.append(f"- {name}  {url}")
 
-        # 자동으로 Excel 저장 (프롬프트 없이)
-        try:
-            import re as _re
-            from datetime import datetime as _dt
-            ts   = _dt.now().strftime("%Y%m%d_%H%M")
-            safe = _re.sub(r'[^\w가-힣]', '_', topic)[:30]
-            base = f"리서치_{safe}_{ts}"
-            saved_path = _rl._save_excel(base, topic, analysis, results)
-            if saved_path:
-                lines.append(f"\n저장 완료: {saved_path}")
-        except Exception as e:
-            lines.append(f"\n[저장 실패: {e}]")
+        # 결과 캐시 (save_research 도구에서 재사용)
+        _last_research.update({
+            "topic": topic, "plan": plan,
+            "analysis": analysis, "results": results
+        })
 
+        lines.append("\n어떤 형식으로 저장할까요? Excel, PDF, PPT 중 원하는 대로 말씀해주세요.")
         return "\n".join(lines)
     except Exception as e:
         return f"[웹 리서치 오류: {e}]"
@@ -423,6 +471,8 @@ def _exec_tool(name: str, args: dict) -> str:
         "web_research":     lambda: _tool_web_research(
                                 args.get("topic", ""),
                                 args.get("depth", "중간")),
+        "save_research":    lambda: _tool_save_research(
+                                args.get("formats", ["excel"])),
     }
     fn = dispatch.get(name)
     if fn:
@@ -533,6 +583,21 @@ _TOOL_DEFS = [
         }, "required": ["model", "prompt"]}
     }},
     {"type": "function", "function": {
+        "name": "save_research",
+        "description": (
+            "리서치 결과를 원하는 형식으로 저장합니다. "
+            "web_research 실행 후 사용자가 저장 형식을 말하면 호출하세요. "
+            "Excel, PDF, PPT 중 원하는 것을 복수로 지정할 수 있습니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "formats": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["excel", "pdf", "ppt"]},
+                "description": "저장할 형식 목록. 예: ['excel'], ['excel','pdf'], ['excel','pdf','ppt']"
+            }
+        }, "required": ["formats"]}
+    }},
+    {"type": "function", "function": {
         "name": "web_research",
         "description": (
             "웹 리서치 전체 파이프라인을 실행합니다. "
@@ -579,7 +644,11 @@ _SYSTEM = """당신은 MAESTRO입니다.
 
 **web_research** — 웹 리서치 전체 파이프라인입니다.
 경쟁사 분석, 시장 조사, 업체 비교 등 특정 주제를 깊게 파야 할 때 씁니다.
-자동으로 검색 쿼리 생성 → 웹 수집 → 구조화 추출 → 시장 분석 → 전략 인사이트까지 완료하고 파일로 저장합니다.
+완료 후 반드시 사용자에게 "어떤 형식으로 저장할까요? (Excel / PDF / PPT)" 를 물어보세요.
+
+**save_research** — 리서치 결과를 파일로 저장합니다.
+사용자가 원하는 형식을 말하면 Excel, PDF, PPT 중 하나 또는 여러 개를 동시에 저장합니다.
+"다 해줘", "전부" 같은 말이면 세 가지 모두 저장하세요.
 
 **ask_claude_code** — 실제 Claude Code CLI를 호출합니다.
 파일을 만들고, 코드를 짜고, 버그를 고치고, 테스트까지 돌립니다.
@@ -725,6 +794,7 @@ _TOOL_ICONS = {
     "ask_specialist":  "[LLM]",
     "ask_claude_code": "[CLAUDE CODE]",
     "web_research":    "[RESEARCH]",
+    "save_research":   "[SAVE]",
 }
 
 def _show_tool_call(name: str, args: dict):
@@ -755,6 +825,9 @@ def _show_tool_call(name: str, args: dict):
         topic = args.get("topic", "")
         depth = args.get("depth", "중간")
         console.print(f"  {icon} [bold green]{topic}[/bold green]  [{depth}]")
+    elif name == "save_research":
+        fmts = ", ".join(args.get("formats", []))
+        console.print(f"  {icon} [dim]{fmts} 저장 중...[/dim]")
     elif name in ("glob_search", "grep_search"):
         console.print(f"  {icon} [dim]검색:[/dim] {args.get('pattern', '')}")
     elif name == "list_dir":
