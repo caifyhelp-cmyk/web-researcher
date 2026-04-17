@@ -1,23 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-MAESTRO v1.0 — 현존 최강 AI 오케스트레이터
+MAESTRO v1.1 — 현존 최강 AI 오케스트레이터
 
-조경일 뇌 에이전트 × GPT-4o × Claude × DeepSeek × Grok
+조경일 뇌 에이전트 × GPT-4o × Claude Code × DeepSeek × Grok
 Claude Code 동일 Tool Suite + ReAct 에이전트 루프
 
 아키텍처:
-  - GPT-4o : 메인 오케스트레이터 (도구 호출, 흐름 제어)
-  - DeepSeek: 복잡한 추론, 수학, 단계적 분석
-  - Claude  : 긴 문서, 정밀 분석, 세밀한 글쓰기
-  - Grok    : 실시간 정보, 최신 이슈
-  - 뇌 에이전트: 마케팅/전략 판단 (조경일 인지 패턴 1,180개)
+  - GPT-4o      : 메인 오케스트레이터 (도구 호출, 흐름 제어)
+  - Claude Code : 실제 Claude Code CLI 호출 (코딩/파일작업 최강)
+  - DeepSeek    : 복잡한 추론, 수학, 단계적 분석
+  - Claude API  : 긴 문서, 정밀 분석, 세밀한 글쓰기
+  - Grok        : 실시간 정보, 최신 이슈
+  - 뇌 에이전트 : 마케팅/전략 판단 (조경일 인지 패턴 1,180개)
 """
 
 import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -274,21 +275,85 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
     return f"[알 수 없는 모델: {model}]"
 
 
+def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> str:
+    """
+    실제 Claude Code CLI를 subprocess로 호출.
+    코딩, 파일 작업, 복잡한 멀티파일 수정에 최적.
+    claude -p "prompt" --output-format json --dangerously-skip-permissions
+    """
+    import shutil
+    claude_bin = shutil.which("claude") or "claude"
+
+    work_dir = str(Path(cwd).expanduser().resolve())
+
+    cmd = [
+        claude_bin,
+        "-p", prompt,
+        "--output-format", "json",
+        "--dangerously-skip-permissions",
+        "--add-dir", work_dir,
+    ]
+
+    # Claude Code는 OAuth 세션으로 인증 — ANTHROPIC_API_KEY 제거해야 충돌 없음
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            cwd=work_dir,
+            env=env,
+        )
+        raw = result.stdout.strip()
+        if not raw:
+            err = result.stderr.strip()
+            return f"[Claude Code 출력 없음] {err[:300]}"
+
+        # JSON 파싱 시도
+        try:
+            data = json.loads(raw)
+            # stream-json 마지막 라인일 수도 있음
+            if isinstance(data, list):
+                data = data[-1]
+            if data.get("is_error"):
+                return f"[Claude Code 오류] {data.get('result', raw)}"
+            return data.get("result", raw)
+        except json.JSONDecodeError:
+            # 텍스트 형식 그대로 반환
+            return raw
+
+    except subprocess.TimeoutExpired:
+        return f"[Claude Code 타임아웃] {timeout}초 초과"
+    except FileNotFoundError:
+        return "[Claude Code 미설치] 'claude' 명령어를 찾을 수 없습니다."
+    except Exception as e:
+        return f"[Claude Code 오류: {e}]"
+
+
 def _exec_tool(name: str, args: dict) -> str:
     """도구 디스패처"""
     dispatch = {
-        "read_file":      lambda: _tool_read_file(**args),
-        "write_file":     lambda: _tool_write_file(**args),
-        "edit_file":      lambda: _tool_edit_file(**args),
-        "run_bash":       lambda: _tool_run_bash(**args),
-        "glob_search":    lambda: _tool_glob(**args),
-        "grep_search":    lambda: _tool_grep(**args),
-        "list_dir":       lambda: _tool_list_dir(**args),
-        "web_search":     lambda: _tool_web_search(**args),
-        "web_fetch":      lambda: _tool_web_fetch(**args),
-        "ask_brain":      lambda: _call_brain(args.get("situation", "")),
-        "ask_specialist": lambda: _tool_ask_specialist(
-                              args.get("model", "gpt-4o"), args.get("prompt", "")),
+        "read_file":        lambda: _tool_read_file(**args),
+        "write_file":       lambda: _tool_write_file(**args),
+        "edit_file":        lambda: _tool_edit_file(**args),
+        "run_bash":         lambda: _tool_run_bash(**args),
+        "glob_search":      lambda: _tool_glob(**args),
+        "grep_search":      lambda: _tool_grep(**args),
+        "list_dir":         lambda: _tool_list_dir(**args),
+        "web_search":       lambda: _tool_web_search(**args),
+        "web_fetch":        lambda: _tool_web_fetch(**args),
+        "ask_brain":        lambda: _call_brain(args.get("situation", "")),
+        "ask_specialist":   lambda: _tool_ask_specialist(
+                                args.get("model", "gpt-4o"), args.get("prompt", "")),
+        "ask_claude_code":  lambda: _tool_ask_claude_code(
+                                args.get("prompt", ""),
+                                args.get("cwd", "."),
+                                args.get("timeout", 180)),
     }
     fn = dispatch.get(name)
     if fn:
@@ -398,6 +463,20 @@ _TOOL_DEFS = [
             "prompt": {"type": "string"}
         }, "required": ["model", "prompt"]}
     }},
+    {"type": "function", "function": {
+        "name": "ask_claude_code",
+        "description": (
+            "실제 Claude Code CLI를 호출합니다. "
+            "파일 생성/수정/삭제, 복잡한 코딩 작업, 멀티파일 리팩토링, "
+            "프로그램 전체 구현 등 코딩 관련 작업에 최우선 사용하세요. "
+            "Claude Code가 직접 파일을 읽고 수정하고 테스트까지 수행합니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "prompt":  {"type": "string", "description": "Claude Code에게 전달할 작업 지시"},
+            "cwd":     {"type": "string", "description": "작업 디렉토리 경로 (기본: 현재 폴더)"},
+            "timeout": {"type": "integer", "description": "최대 대기 시간(초, 기본 180)"}
+        }, "required": ["prompt"]}
+    }},
 ]
 
 
@@ -413,10 +492,17 @@ _SYSTEM = """당신은 MAESTRO — 조경일의 뇌 에이전트와 최고의 AI
 - 단순 채팅이 아닌, 실제로 파일을 읽고 쓰고 코드를 실행하는 에이전트
 
 ## 전문가 위임 원칙
+- 코딩/파일생성/프로그램 구현 → ask_claude_code(prompt, cwd) ★ 최우선
 - 복잡한 추론/수학/알고리즘 → ask_specialist("deepseek", ...)
 - 긴 문서 분석/정밀 글쓰기 → ask_specialist("claude", ...)
 - 실시간/최신 정보 필요 → ask_specialist("grok", ...)
 - 마케팅/전략/비즈니스 판단 → ask_brain(situation)
+
+## ask_claude_code 사용 원칙
+- "만들어줘", "구현해줘", "코딩해줘", "수정해줘" → 무조건 ask_claude_code
+- cwd는 작업 대상 폴더 경로를 반드시 명시
+- Claude Code가 직접 파일을 읽고 쓰고 테스트까지 수행하므로 별도 파일 조작 불필요
+- 작업이 완료되면 결과 요약만 사용자에게 전달
 
 ## 도구 사용 원칙
 1. 파일 수정 전 반드시 read_file로 현재 내용 확인
@@ -515,17 +601,18 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
 # ═══════════════════════════════════════════════════════════════
 
 _TOOL_ICONS = {
-    "read_file":      "[READ]",
-    "write_file":     "[WRITE]",
-    "edit_file":      "[EDIT]",
-    "run_bash":       "[BASH]",
-    "glob_search":    "[GLOB]",
-    "grep_search":    "[GREP]",
-    "list_dir":       "[DIR]",
-    "web_search":     "[WEB]",
-    "web_fetch":      "[FETCH]",
-    "ask_brain":      "[BRAIN]",
-    "ask_specialist": "[LLM]",
+    "read_file":       "[READ]",
+    "write_file":      "[WRITE]",
+    "edit_file":       "[EDIT]",
+    "run_bash":        "[BASH]",
+    "glob_search":     "[GLOB]",
+    "grep_search":     "[GREP]",
+    "list_dir":        "[DIR]",
+    "web_search":      "[WEB]",
+    "web_fetch":       "[FETCH]",
+    "ask_brain":       "[BRAIN]",
+    "ask_specialist":  "[LLM]",
+    "ask_claude_code": "[CLAUDE CODE]",
 }
 
 def _show_tool_call(name: str, args: dict):
@@ -547,6 +634,11 @@ def _show_tool_call(name: str, args: dict):
     elif name == "ask_specialist":
         model = args.get("model", "")
         console.print(f"  {icon} [dim]{model} 전문가에게 위임 중...[/dim]")
+    elif name == "ask_claude_code":
+        cwd = args.get("cwd", ".")
+        preview = args.get("prompt", "")[:60]
+        console.print(f"  {icon} [bold cyan]{preview}...[/bold cyan]")
+        console.print(f"    [dim]작업 경로: {cwd}[/dim]")
     elif name in ("glob_search", "grep_search"):
         console.print(f"  {icon} [dim]검색:[/dim] {args.get('pattern', '')}")
     elif name == "list_dir":
