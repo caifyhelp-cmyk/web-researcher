@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.7.1"
+VERSION = "1.7.2"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -51,6 +51,60 @@ oai      = OpenAI(api_key=OPENAI_KEY)                                         if
 ant      = Anthropic(api_key=ANTHROPIC_KEY)                                   if ANTHROPIC_KEY else None
 deepseek = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_KEY  else None
 grok_ai  = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")      if GROK_KEY      else None
+
+# ── 자동 업데이트 ────────────────────────────────────────────────
+_GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
+
+def _check_update():
+    """GitHub version.txt 확인 후 전체 파일 자동 업데이트 및 재시작"""
+    import urllib.request as _ur
+    try:
+        with _ur.urlopen(f"{_GITHUB_RAW}/version.txt", timeout=4) as r:
+            latest = r.read().decode().strip()
+        # app_local.py 의 VERSION 기준으로 비교
+        try:
+            import app_local as _al
+            cur = getattr(_al, "VERSION", VERSION)
+        except Exception:
+            cur = VERSION
+        if latest == cur:
+            return
+        print(f"  업데이트 발견: {cur} -> {latest}  다운로드 중...")
+        here = Path(__file__).parent
+        self_ok = False
+        files = [
+            ("app_local.py",          "app_local.py"),
+            ("maestro.py",            "maestro.py"),
+            ("web_researcher.py",     "web_researcher.py"),
+            ("orchestrator.py",       "orchestrator.py"),
+            ("feedback_collector.py", "feedback_collector.py"),
+            ("pattern_collector.py",  "pattern_collector.py"),
+            ("tools_kb.json",         "tools_kb.json"),
+        ]
+        for gh_name, local_name in files:
+            try:
+                import time as _t
+                tmp, _ = _ur.urlretrieve(f"{_GITHUB_RAW}/{gh_name}?t={int(_t.time())}")
+                dest = here / local_name
+                raw = open(tmp, "rb").read()
+                open(dest, "wb").write(raw)
+                if local_name == "app_local.py":
+                    import re as _re
+                    txt = raw.decode(errors="replace")
+                    m = _re.search(r'VERSION\s*=\s*["\']([^"\']+)["\']', txt)
+                    if m and m.group(1) == latest:
+                        self_ok = True
+            except Exception:
+                pass
+        if not self_ok:
+            print(f"  업데이트 파일 검증 실패 (VERSION 불일치). 재시작 건너뜀.")
+            return
+        print("  업데이트 완료. 재시작합니다...\n")
+        time.sleep(1)
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+        os._exit(0)
+    except Exception:
+        pass
 
 # ── 오케스트레이터 ────────────────────────────────────────────────
 try:
@@ -1846,6 +1900,9 @@ def _show_tool_result(name: str, result: str):
 # ═══════════════════════════════════════════════════════════════
 
 def main():
+    # 자동 업데이트 (가장 먼저 실행 — 재시작 후 새 버전이 뜸)
+    _check_update()
+
     console.clear()
 
     # 연결된 모델 확인
