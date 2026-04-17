@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -1565,6 +1565,15 @@ Carrd, Framer, n8n, Supabase, Vercel, Notion, Claude Code 등
 HTML/CSS/JS 정적 사이트, Next.js, React, Vue, Svelte 모두 지원.
 "이 폴더 배포해줘", "랜딩페이지 올려줘" 같은 요청에 사용하세요.
 VERCEL_TOKEN이 없으면 발급 경로를 안내합니다.
+
+> **[자동 제안 규칙]** 대화 흐름에서 아래 상황이 감지되면, 먼저 물어보세요:
+> - 랜딩페이지 / 포트폴리오 / 소개페이지 / 웹사이트 제작 완료 시점
+> - HTML/CSS/JS 파일을 write_file로 생성한 직후
+> - "공유하고 싶어", "링크 보내고 싶어", "온라인에 올리고 싶어" 등 배포 의도 발언
+> - 클라이언트에게 결과물을 보여줘야 하는 상황
+>
+> 이때 이렇게 제안하세요:
+> "Vercel로 지금 바로 배포해서 라이브 링크 드릴 수 있어요. 해드릴까요?"
 
 **meeting_to_notion** — 회의록 자동화
 음성 파일 경로를 주면 STT→화자 분리→AI 분석→노션 페이지 생성까지 전부 자동.
