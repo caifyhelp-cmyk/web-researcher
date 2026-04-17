@@ -59,7 +59,8 @@ def _check_update():
     except Exception:
         pass  # 오프라인이거나 실패 시 그냥 실행
 
-_check_update()
+if __name__ == "__main__":
+    _check_update()
 
 # API 키 자동 주입
 try:
