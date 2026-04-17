@@ -277,4 +277,16 @@ def process_session(topic: str, research_type: str, plan: dict, analysis: dict,
             score=score, insights=insights, models_used=models_used
         )
 
+    # 4. 집단지성 파이프라인 — 좋은 패턴 추출 (점수 3 이상)
+    if score >= 3 and conversation:
+        try:
+            import pattern_collector as _pc
+            conv_text = "\n".join(
+                f"{'사용자' if m.get('role')=='user' else '어시스턴트'}: {m.get('content','')}"
+                for m in conversation if isinstance(m, dict)
+            ) if conversation and isinstance(conversation[0], dict) else str(conversation)
+            _pc.process_conversation(topic, conv_text, score)
+        except Exception:
+            pass
+
     return result
