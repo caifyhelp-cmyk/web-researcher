@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -1175,8 +1175,17 @@ def main():
     ))
     console.print(f"\n[dim]결과 저장 폴더: {SAVE_DIR}[/dim]")
 
-    # 뇌 에이전트 상태 출력
-    if _get_brain_agent():
+    # 뇌 에이전트 상태 출력 — HTTP API 먼저, 로컬 폴백
+    _brain_ok = False
+    try:
+        _ping = requests.get(
+            _BRAIN_AGENT_URL.replace("/api/research", "/"),
+            timeout=5
+        )
+        _brain_ok = _ping.status_code < 500
+    except Exception:
+        _brain_ok = bool(_get_brain_agent())
+    if _brain_ok:
         console.print("[dim]뇌 에이전트: 연동됨[/dim]")
     else:
         console.print("[dim]뇌 에이전트: 미연동 (Claude로 대체)[/dim]")
