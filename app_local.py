@@ -4,7 +4,7 @@
 import os, sys, json, re, time
 from datetime import datetime
 
-VERSION = "2.4.2"
+VERSION = "2.4.3"
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
 
 def _check_update():
@@ -104,6 +104,57 @@ except Exception:
 
 _session_models: dict = {}  # category -> model_name (이번 세션 추적용)
 
+
+# ── 백그라운드 자기평가 ───────────────────────────────────────────
+def _start_background_evaluation():
+    """앱 시작 시 7일 이상 된 카테고리를 백그라운드에서 재평가"""
+    if not _ORCH_ENABLED:
+        return
+
+    stale = orch.get_stale_categories(days=7)
+    if not stale:
+        return
+
+    import threading
+
+    def _run():
+        # Meta caller (DeepSeek → GPT-4o fallback)
+        def meta_caller(prompt: str) -> str:
+            if deepseek:
+                try:
+                    r = deepseek.chat.completions.create(
+                        model="deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=300
+                    )
+                    return r.choices[0].message.content.strip()
+                except Exception:
+                    pass
+            return call_gpt(prompt, model="gpt-4o", max_tokens=300)
+
+        # Self-callers
+        self_callers = {}
+        if oai:
+            self_callers["gpt-4o"]      = lambda p: call_gpt(p, model="gpt-4o",      max_tokens=50)
+            self_callers["gpt-4o-mini"] = lambda p: call_gpt(p, model="gpt-4o-mini", max_tokens=50)
+        if deepseek:
+            self_callers["deepseek"] = lambda p: call_deepseek(p)
+        if claude_c:
+            self_callers["claude"] = lambda p: call_claude(p)
+
+        if not self_callers:
+            return
+
+        for cat in stale:
+            try:
+                winner = orch.run_self_evaluation(cat, meta_caller, self_callers)
+                orch.reset_streak(cat)
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
 # 저장 폴더 — Desktop 없으면 Documents, 그것도 없으면 홈
 def _get_save_dir():
     home = os.path.expanduser("~")
@@ -196,10 +247,13 @@ def call_model(category: str, prompt: str, system: str = "",
                temperature: float = 1.0, max_tokens: int = 2000) -> str:
     """오케스트레이터가 선택한 최적 모델로 동적 라우팅."""
     if _ORCH_ENABLED:
+        # streak >= 3이면 백그라운드 재평가 트리거
+        if orch.check_reevaluation_needed(category):
+            _start_background_evaluation()
         model = orch.get_best_model(category)
     else:
-        model = {"query_generation": "deepseek", "url_filtering": "gpt-4o-mini",
-                 "data_extraction": "gpt-4o-mini", "market_analysis": "gpt-4o",
+        model = {"query_generation": "deepseek", "url_filtering": "gpt-4o",
+                 "data_extraction": "gpt-4o", "market_analysis": "gpt-4o",
                  "strategy_insight": "claude"}.get(category, "gpt-4o-mini")
 
     _session_models[category] = model
@@ -1176,6 +1230,9 @@ def main():
         border_style="bright_blue", padding=(1,6)
     ))
     console.print(f"\n[dim]결과 저장 폴더: {SAVE_DIR}[/dim]")
+
+    # 오케스트레이터 백그라운드 재평가 (7일 이상 된 카테고리)
+    _start_background_evaluation()
 
     # 뇌 에이전트 상태 출력 — HTTP API 먼저, 로컬 폴백
     _brain_ok = False

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""AI 오케스트레이터 — 동적 모델 선택 + 학습 DB (v1.0)
+"""AI 오케스트레이터 — 동적 모델 선택 + 학습 DB (v1.1)
 
 설계 원칙:
   - Meta LLM(DeepSeek R1)이 모델별 적합도 점수 매김
@@ -10,10 +10,13 @@
 """
 
 import os, json, sqlite3, concurrent.futures, re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orchestrator.db")
+
+# 캐시 버전 — 기본값이 바뀔 때 올리면 DB 강제 업데이트
+_CACHE_VERSION = 2
 
 # 카테고리별 설명 (Meta LLM 프롬프트용)
 CATEGORY_DESC = {
@@ -27,14 +30,15 @@ CATEGORY_DESC = {
 }
 
 # 콜드 스타트용 기본 캐시 — 첫 실행 시 DB에 시드됨
+# v2: data_extraction, url_filtering → gpt-4o (실제 평가 결과 반영)
 _DEFAULT_CACHE = {
-    "query_generation": {"winner": "deepseek",    "meta_score": 88, "self_score": 85},
-    "url_filtering":    {"winner": "gpt-4o-mini", "meta_score": 82, "self_score": 90},
-    "data_extraction":  {"winner": "gpt-4o-mini", "meta_score": 85, "self_score": 88},
-    "market_analysis":  {"winner": "gpt-4o",      "meta_score": 90, "self_score": 87},
-    "strategy_insight": {"winner": "claude",       "meta_score": 95, "self_score": 92},
-    "document_writing": {"winner": "claude",       "meta_score": 92, "self_score": 90},
-    "quick_qa":         {"winner": "gpt-4o-mini", "meta_score": 80, "self_score": 85},
+    "query_generation": {"winner": "deepseek",  "meta_score": 88, "self_score": 85},
+    "url_filtering":    {"winner": "gpt-4o",    "meta_score": 90, "self_score": 85},
+    "data_extraction":  {"winner": "gpt-4o",    "meta_score": 95, "self_score": 85},
+    "market_analysis":  {"winner": "gpt-4o",    "meta_score": 90, "self_score": 87},
+    "strategy_insight": {"winner": "claude",    "meta_score": 95, "self_score": 92},
+    "document_writing": {"winner": "claude",    "meta_score": 92, "self_score": 90},
+    "quick_qa":         {"winner": "gpt-4o-mini","meta_score": 80, "self_score": 85},
 }
 
 ALL_MODELS = ["claude", "gpt-4o", "gpt-4o-mini", "deepseek"]
@@ -51,7 +55,7 @@ def _get_db() -> sqlite3.Connection:
 
 
 def init_db():
-    """DB 테이블 생성 + 기본 캐시 시드"""
+    """DB 테이블 생성 + 기본 캐시 시드 (버전 관리 포함)"""
     con = _get_db()
     con.executescript("""
         CREATE TABLE IF NOT EXISTS evaluation_cache (
@@ -60,6 +64,7 @@ def init_db():
             meta_score       INTEGER DEFAULT 0,
             self_score       INTEGER DEFAULT 0,
             low_score_streak INTEGER DEFAULT 0,
+            cache_version    INTEGER DEFAULT 1,
             updated_at       TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS feedback_records (
@@ -79,14 +84,30 @@ def init_db():
             timestamp      TEXT
         );
     """)
+    # cache_version 컬럼 없는 구버전 DB 마이그레이션
+    try:
+        con.execute("ALTER TABLE evaluation_cache ADD COLUMN cache_version INTEGER DEFAULT 1")
+        con.commit()
+    except Exception:
+        pass  # 이미 존재하면 무시
+
     cur = con.cursor()
+    now = datetime.now().isoformat()
     for cat, data in _DEFAULT_CACHE.items():
+        # 새 카테고리 삽입 (없을 때만)
         cur.execute("""
             INSERT OR IGNORE INTO evaluation_cache
-            (category, winner, meta_score, self_score, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            (category, winner, meta_score, self_score, cache_version, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
         """, (cat, data["winner"], data["meta_score"], data["self_score"],
-              datetime.now().isoformat()))
+              _CACHE_VERSION, now))
+        # 버전이 낮은 기존 캐시 강제 업데이트
+        cur.execute("""
+            UPDATE evaluation_cache
+            SET winner=?, meta_score=?, self_score=?, cache_version=?, updated_at=?
+            WHERE category=? AND (cache_version IS NULL OR cache_version < ?)
+        """, (data["winner"], data["meta_score"], data["self_score"],
+              _CACHE_VERSION, now, cat, _CACHE_VERSION))
     con.commit()
     con.close()
 
@@ -299,6 +320,31 @@ def reset_streak(category: str):
         con.close()
     except Exception:
         pass
+
+
+# ══════════════════════════════════════════════
+#  주기적 재평가 트리거
+# ══════════════════════════════════════════════
+
+def should_reevaluate(category: str, days: int = 7) -> bool:
+    """마지막 업데이트가 days일 이상 지났으면 True"""
+    try:
+        con = _get_db()
+        cur = con.cursor()
+        cur.execute("SELECT updated_at FROM evaluation_cache WHERE category = ?", (category,))
+        row = cur.fetchone()
+        con.close()
+        if not row or not row["updated_at"]:
+            return True
+        updated = datetime.fromisoformat(row["updated_at"])
+        return datetime.now() - updated > timedelta(days=days)
+    except Exception:
+        return False
+
+
+def get_stale_categories(days: int = 7) -> list:
+    """재평가가 필요한 카테고리 목록 반환"""
+    return [cat for cat in CATEGORY_DESC if should_reevaluate(cat, days)]
 
 
 # DB 초기화 (임포트 시 자동 실행)
