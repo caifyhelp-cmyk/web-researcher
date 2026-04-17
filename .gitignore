@@ -9,3 +9,6 @@ chromedriver*
 _local_keys.py
 installer/app_data/_local_keys.py
 installer/app_data/app.py
+.enc_key
+encrypted_logs/
+orchestrator.db
