@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -92,6 +92,29 @@ _last_research: dict = {}
 # 저장 폴더
 _SAVE_DIR = Path(os.path.expanduser("~")) / "Desktop" / "MAESTRO결과"
 _SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+# 세션 히스토리 경로
+_HISTORY_PATH = Path(os.path.expanduser("~")) / ".maestro_history.json"
+
+
+def _save_history(history: list):
+    """대화 히스토리 로컬 저장"""
+    try:
+        data = {"saved_at": datetime.now().isoformat(), "history": history[-20:]}
+        _HISTORY_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_history() -> tuple:
+    """저장된 히스토리 로드. (history, saved_at) 반환"""
+    try:
+        if _HISTORY_PATH.exists():
+            data = json.loads(_HISTORY_PATH.read_text(encoding="utf-8"))
+            return data.get("history", []), data.get("saved_at", "")
+    except Exception:
+        pass
+    return [], ""
 
 # ── 뇌 에이전트 ──────────────────────────────────────────────────
 _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
@@ -601,6 +624,145 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
         return f"[웹 리서치 오류: {e}]"
 
 
+def _tool_analyze_document(path: str, question: str = "") -> str:
+    """
+    파일을 읽고 AI로 분석.
+    지원: PDF, Word(.docx), Excel(.xlsx), CSV, 이미지(.png/.jpg/.webp), 텍스트/코드
+    question이 있으면 해당 질문에 답하고, 없으면 핵심 내용 요약.
+    """
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"[파일 없음: {path}]"
+
+    ext = p.suffix.lower().lstrip(".")
+    text = ""
+
+    # ── PDF ──────────────────────────────────────────────────────
+    if ext == "pdf":
+        try:
+            import pdfplumber
+            with pdfplumber.open(str(p)) as pdf:
+                pages = [pg.extract_text() or "" for pg in pdf.pages[:40]]
+            text = "\n".join(pages)
+        except ImportError:
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(p))
+                text = "\n".join(pg.extract_text() or "" for pg in reader.pages[:40])
+            except ImportError:
+                return "[PDF 읽기 실패] pip install pdfplumber 또는 pip install pypdf"
+        except Exception as e:
+            return f"[PDF 오류: {e}]"
+
+    # ── Word ─────────────────────────────────────────────────────
+    elif ext in ("docx", "doc"):
+        try:
+            from docx import Document
+            doc = Document(str(p))
+            parts = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    parts.append(para.text)
+            # 표도 추출
+            for table in doc.tables:
+                for row in table.rows:
+                    parts.append("\t".join(cell.text for cell in row.cells))
+            text = "\n".join(parts)
+        except ImportError:
+            return "[Word 읽기 실패] pip install python-docx"
+        except Exception as e:
+            return f"[Word 오류: {e}]"
+
+    # ── Excel ────────────────────────────────────────────────────
+    elif ext in ("xlsx", "xls"):
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(str(p), read_only=True, data_only=True)
+            rows_text = []
+            for shname in wb.sheetnames[:5]:
+                ws = wb[shname]
+                rows_text.append(f"[시트: {shname}]")
+                for row in list(ws.iter_rows(values_only=True))[:200]:
+                    rows_text.append("\t".join("" if c is None else str(c) for c in row))
+            text = "\n".join(rows_text)
+        except Exception as e:
+            return f"[Excel 오류: {e}]"
+
+    # ── CSV ──────────────────────────────────────────────────────
+    elif ext == "csv":
+        try:
+            import csv as _csv
+            lines = []
+            for enc in ("utf-8", "cp949", "euc-kr"):
+                try:
+                    with open(p, encoding=enc, errors="replace") as f:
+                        for _, row in zip(range(300), _csv.reader(f)):
+                            lines.append("\t".join(row))
+                    break
+                except Exception:
+                    continue
+            text = "\n".join(lines)
+        except Exception as e:
+            return f"[CSV 오류: {e}]"
+
+    # ── 이미지 — GPT-4o Vision ────────────────────────────────────
+    elif ext in ("png", "jpg", "jpeg", "webp", "gif", "bmp"):
+        if not oai:
+            return "[OpenAI API 키 없음]"
+        try:
+            import base64 as _b64
+            with open(p, "rb") as f:
+                img_b64 = _b64.b64encode(f.read()).decode()
+            mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                    "webp": "image/webp", "gif": "image/gif", "bmp": "image/bmp"}.get(ext, "image/png")
+            q = (question or
+                 "이 이미지를 상세히 분석해주세요. "
+                 "텍스트가 있으면 전부 추출하고, 내용의 의미와 시사점을 설명해주세요.")
+            r = oai.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": q},
+                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}
+                ]}],
+                max_tokens=2000
+            )
+            return r.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[이미지 분석 오류: {e}]"
+
+    # ── 텍스트 / 코드 ─────────────────────────────────────────────
+    else:
+        for enc in ("utf-8", "cp949", "euc-kr"):
+            try:
+                text = p.read_text(encoding=enc, errors="replace")
+                break
+            except Exception:
+                continue
+        if not text:
+            return f"[읽기 실패: {path}]"
+
+    if not text or not text.strip():
+        return "[파일 내용이 비어있거나 텍스트를 추출할 수 없습니다]"
+
+    if not oai:
+        return f"[내용 추출 완료 — API 키 없어 분석 불가]\n{text[:3000]}"
+
+    q = (question or
+         "이 파일의 핵심 내용을 분석해주세요. "
+         "중요한 수치, 인사이트, 시사점을 포함해서 요약해주세요.")
+    try:
+        r = oai.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content":
+                f"파일명: {p.name}\n질문: {q}\n\n내용:\n{text[:9000]}"}],
+            max_tokens=2500,
+            temperature=0.3
+        )
+        return r.choices[0].message.content.strip()
+    except Exception as e:
+        return f"[분석 오류: {e}]\n\n내용 일부:\n{text[:2000]}"
+
+
 def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> str:
     """
     실제 Claude Code CLI를 subprocess로 호출.
@@ -685,6 +847,9 @@ def _exec_tool(name: str, args: dict) -> str:
                                 args.get("depth", "중간")),
         "save_research":    lambda: _tool_save_research(
                                 args.get("formats", ["excel"])),
+        "analyze_document":   lambda: _tool_analyze_document(
+                                args.get("path", ""),
+                                args.get("question", "")),
         "lookup_tool":        lambda: _tool_lookup_tool(args.get("query", "")),
         "vibe_coding_guide":  lambda: _tool_vibe_coding_guide(
                                   args.get("idea", ""),
@@ -808,6 +973,19 @@ _TOOL_DEFS = [
             "model":  {"type": "string", "enum": ["deepseek", "claude", "grok", "gpt-4o"]},
             "prompt": {"type": "string"}
         }, "required": ["model", "prompt"]}
+    }},
+    {"type": "function", "function": {
+        "name": "analyze_document",
+        "description": (
+            "파일을 읽고 AI로 분석합니다. "
+            "PDF, Word(.docx), Excel(.xlsx), CSV, 이미지(.png/.jpg/.webp), 텍스트/코드 파일 모두 지원. "
+            "사용자가 파일 경로를 주거나 '이 파일 분석해줘', '문서 요약해줘'라고 하면 사용하세요. "
+            "이미지는 GPT-4o Vision으로 텍스트 추출 및 내용 분석까지 가능합니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "path":     {"type": "string", "description": "분석할 파일의 전체 경로"},
+            "question": {"type": "string", "description": "파일에 대해 묻고 싶은 구체적인 질문 (없으면 전체 요약)"}
+        }, "required": ["path"]}
     }},
     {"type": "function", "function": {
         "name": "lookup_tool",
@@ -937,6 +1115,11 @@ Carrd, Framer, n8n, Supabase, Vercel, Notion, Claude Code 등
 ---
 
 ## 도구 목록
+
+**analyze_document** — 파일/문서/이미지 분석
+PDF, Word, Excel, CSV, 이미지, 코드 파일 전부 분석 가능.
+"이 파일 요약해줘", "이 이미지 텍스트 추출해줘", "엑셀 데이터 분석해줘" 같은 요청에 사용.
+파일 경로를 경로 그대로 받아서 바로 처리합니다.
 
 **vibe_coding_guide** — 바이브코딩 로드맵 생성
 아이디어가 있는데 어디서 시작해야 할지 모를 때. 어떤 툴로 어떻게 만들지 단계별 계획을 드립니다.
@@ -1096,6 +1279,7 @@ _TOOL_ICONS = {
     "save_research":   "[SAVE]",
     "generate_image":    "[IMAGE]",
     "create_chart":      "[CHART]",
+    "analyze_document":  "[DOC]",
     "lookup_tool":       "[TOOL]",
     "vibe_coding_guide": "[VIBE]",
 }
@@ -1131,6 +1315,11 @@ def _show_tool_call(name: str, args: dict):
     elif name == "save_research":
         fmts = ", ".join(args.get("formats", []))
         console.print(f"  {icon} [dim]{fmts} 저장 중...[/dim]")
+    elif name == "analyze_document":
+        fname = Path(args.get("path", "")).name
+        q     = args.get("question", "")
+        console.print(f"  {icon} [bold yellow]{fname}[/bold yellow]" +
+                      (f"  [dim]{q[:40]}[/dim]" if q else "  [dim]전체 분석[/dim]"))
     elif name == "lookup_tool":
         console.print(f"  {icon} [dim]{args.get('query', '')} 조회 중...[/dim]")
     elif name == "vibe_coding_guide":
@@ -1200,7 +1389,21 @@ def main():
         console.print("[red]OpenAI API 키가 없습니다. _local_keys.py 또는 환경변수를 확인하세요.[/red]")
         return
 
+    # 세션 이어가기
+    prev_history, saved_at = _load_history()
     history = []
+    if prev_history:
+        saved_short = saved_at[:16].replace("T", " ") if saved_at else ""
+        console.print(f"[dim]이전 대화가 있습니다 ({saved_short})[/dim]")
+        try:
+            if Confirm.ask("  이어서 대화할까요?", default=True):
+                history = prev_history
+                console.print(f"  [green]이전 대화 {len(history)//2}턴 불러옴[/green]\n")
+            else:
+                _HISTORY_PATH.unlink(missing_ok=True)
+                console.print()
+        except Exception:
+            pass
 
     console.print("[dim]무엇이든 물어보세요. 'exit'로 종료.[/dim]\n")
 
@@ -1225,6 +1428,11 @@ def main():
         if user_input.strip() == "/help":
             _show_help()
             continue
+        if user_input.strip() == "/clear":
+            history = []
+            _HISTORY_PATH.unlink(missing_ok=True)
+            console.print("[dim]대화 기록 초기화됨[/dim]\n")
+            continue
 
         console.print()
 
@@ -1241,11 +1449,12 @@ def main():
         ))
         console.print()
 
-        # 히스토리 누적 (마지막 10턴만)
+        # 히스토리 누적 & 저장 (마지막 10턴만)
         history.append({"role": "user",      "content": user_input})
         history.append({"role": "assistant", "content": response})
         if len(history) > 20:
             history = history[-20:]
+        _save_history(history)
 
 
 def _show_model_status():
@@ -1278,13 +1487,15 @@ def _show_help():
         "[bold]사용 가능한 명령[/bold]\n\n"
         "  /models  : 연결된 LLM 상태\n"
         "  /cache   : 오케스트레이터 캐시 보기\n"
+        "  /clear   : 대화 기록 초기화\n"
         "  /help    : 이 도움말\n"
         "  exit     : 종료\n\n"
         "[bold]예시 요청[/bold]\n\n"
-        "  'maestro.py 파일 읽고 구조 설명해줘'\n"
-        "  '이 폴더에 있는 파일들 목록 보여줘'\n"
+        "  'C:\\Users\\나\\Desktop\\보고서.pdf 분석해줘'\n"
+        "  '스크린샷.png 텍스트 추출해줘'\n"
+        "  '데이터.xlsx 핵심 인사이트 뽑아줘'\n"
         "  '삼성전자 최근 마케팅 전략 조사해줘'\n"
-        "  '현재 폴더에서 TODO 주석 찾아줘'\n"
+        "  '랜딩페이지 만들고 싶어, 어디서 시작해?'\n"
         "  'requirements.txt 만들어줘'",
         border_style="dim"
     ))
