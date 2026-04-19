@@ -30,7 +30,7 @@ source.include_patterns =
 requirements =
     python3==3.11.9,
     kivy==2.3.0,
-    cryptography==38.0.4,
+    cryptography==3.4.8,
     openai==1.50.0,
     anthropic==0.34.0,
     requests==2.32.3,
