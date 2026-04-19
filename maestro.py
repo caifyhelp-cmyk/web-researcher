@@ -63,19 +63,33 @@ except ImportError:
 
 
 _NAV_HINT = "  [dim](↑↓ 방향키로 이동  |  ↵ Enter로 선택)[/dim]"
+_MOB_HINT = "  [dim](번호 입력 후 Enter)[/dim]"
 
 
 def _select(message: str, choices: list, default: str = None) -> str:
-    """방향키 선택 (questionary 없으면 텍스트 폴백)"""
-    if _HAS_Q:
-        choice_values = [c if isinstance(c, str) else c["value"] for c in choices]
-        choice_names  = [c if isinstance(c, str) else c["name"]  for c in choices]
+    """방향키 선택. 모바일이면 번호 입력으로 자동 전환."""
+    choice_values = [c if isinstance(c, str) else c["value"] for c in choices]
+    choice_names  = [c if isinstance(c, str) else c["name"]  for c in choices]
+
+    if _HAS_Q and not _IS_MOBILE:
         display = [{"name": n, "value": v} for n, v in zip(choice_names, choice_values)]
         console.print(_NAV_HINT)
         result = questionary.select(message, choices=display, default=default, style=_Q_STYLE).ask()
         return result if result is not None else (default or choice_values[0])
-    opts = "/".join([c if isinstance(c, str) else c["value"] for c in choices])
-    return Prompt.ask(f"{message} ({opts})", default=default or "")
+
+    # 모바일 / 폴백: 번호 선택
+    console.print(f"\n[bold]{message}[/bold]")
+    console.print(_MOB_HINT)
+    for i, name in enumerate(choice_names, 1):
+        console.print(f"  [cyan]{i}[/cyan]  {name}")
+    while True:
+        try:
+            raw = Prompt.ask("번호 입력", default="1").strip()
+            idx = int(raw) - 1
+            if 0 <= idx < len(choice_values):
+                return choice_values[idx]
+        except (ValueError, KeyboardInterrupt, EOFError):
+            return default or choice_values[0]
 
 
 def _confirm(message: str, default: bool = True) -> bool:
@@ -1706,122 +1720,244 @@ def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> st
 #  바이브 코딩 모드
 # ══════════════════════════════════════════════
 
+try:
+    import vibe_db as _vdb
+    _VDB_OK = True
+except Exception:
+    _VDB_OK = False
+
 _VIBE_TRIGGERS = [
     "만들어줘", "만들고 싶어", "개발해줘", "짜줘", "코딩해줘",
     "프로그램", "앱 만들", "툴 만들", "스크립트", "자동화 만들",
     "웹사이트 만들", "봇 만들", "만들어볼까", "구현해줘",
+    "자동화하고", "자동화 해줘", "만들면 어때",
 ]
 
+# 모바일 환경 감지 (터미널 너비 기준)
+import shutil as _shutil
+_IS_MOBILE = _shutil.get_terminal_size().columns < 80
+
+
 def _detect_vibe_need(text: str) -> bool:
-    """사용자 입력에서 바이브코딩 필요성 감지"""
     return any(t in text for t in _VIBE_TRIGGERS)
+
+
+def _extract_code(raw: str) -> str:
+    """LLM 응답에서 코드 블록 추출"""
+    m = re.search(r'```python\n([\s\S]+?)```', raw)
+    return m.group(1) if m else raw
+
+
+def _build_code(request: str, spec: str) -> str:
+    """DeepSeek으로 코드 생성"""
+    prompt = f"""아래 요구사항에 맞는 Python 프로그램을 작성하세요.
+
+요청: {request}
+상세 스펙: {spec}
+
+규칙:
+- 완전히 동작하는 코드만 작성
+- 표준 라이브러리 우선 (외부 패키지 필요시 상단에 pip install 주석)
+- 한국어 출력과 주석
+- 실행하면 바로 결과 나와야 함
+
+```python 으로 시작하는 코드 블록만 출력:"""
+    raw = _tool_ask_specialist("deepseek", prompt, "coding")
+    return _extract_code(raw)
+
+
+def _fix_code(code: str, error: str) -> str:
+    """에러 자동 수정"""
+    prompt = f"""Python 코드에서 에러가 발생했습니다. 수정된 전체 코드만 출력하세요.
+
+에러:
+{error[:400]}
+
+코드:
+{code[:2000]}
+
+```python 으로 시작하는 수정된 코드 블록만 출력:"""
+    raw = _tool_ask_specialist("deepseek", prompt, "coding")
+    return _extract_code(raw)
+
+
+def _run_with_autofix(code: str, output_path: Path) -> tuple[str, bool]:
+    """실행 + 최대 5회 자동 에러 수정. (최종코드, 성공여부) 반환"""
+    for attempt in range(1, 6):
+        output_path.write_text(code, encoding="utf-8")
+        label = f"실행 중... ({attempt}/5)" if attempt > 1 else "실행 중..."
+        with console.status(f"[bold cyan]{label}[/bold cyan]", spinner="dots"):
+            result = _tool_run_bash(f"python3 {output_path} 2>&1", timeout=30, _confirmed=True)
+
+        if "Error" not in result and "Traceback" not in result:
+            return result, True
+
+        if attempt < 5:
+            with console.status("[bold yellow]에러 자동 수정 중...[/bold yellow]", spinner="dots"):
+                code = _fix_code(code, result)
+
+    return result, False
 
 
 def _vibe_coding_session(initial_request: str, history: list) -> str:
     """
-    비개발자 바이브코딩 플로우:
-    요구사항 구체화 → 설계 브리핑 → 코드 생성 → 자동 에러 수정 → 완성 보고
+    바이브코딩 메인 플로우 (v2):
+    DB 유사 검색 → 없으면 3가지 방향 제시 → 선택 → 제작 → DB 저장
     """
-    client = deepseek or ant_fallback() if not deepseek else deepseek
+    w = min(_shutil.get_terminal_size().columns - 4, 80)
+    pad = (1, 1) if _IS_MOBILE else (1, 2)
 
-    # 1단계: 요구사항 구체화 (질문 최대 2개)
-    clarify_prompt = f"""사용자가 이걸 만들고 싶어합니다: "{initial_request}"
+    # ── 1단계: DB에서 유사 프로젝트 검색 ──────────────────────────
+    similar = _vdb.find_similar(initial_request) if _VDB_OK else []
 
-비개발자도 쉽게 답할 수 있는 핵심 질문을 최대 2개만 하세요.
-기술 용어 금지. 짧고 친근하게.
-형식: 질문만 출력 (설명 없이)"""
+    if similar:
+        console.print(Panel(
+            "[bold cyan]비슷한 프로젝트가 있어요![/bold cyan]\n"
+            "[dim]기존 코드를 수정해서 빠르게 만들어드릴 수 있어요.[/dim]",
+            border_style="cyan", padding=pad, width=w
+        ))
+        choices = [{"name": f"⚡ {p['request'][:50]}  (사용 {p['use_count']}회)", "value": str(i)}
+                   for i, p in enumerate(similar)]
+        choices.append({"name": "✨ 새로 만들기", "value": "new"})
+        picked = _select("어떤 방향으로 할까요?", choices=choices)
 
-    questions = _tool_ask_specialist("deepseek", clarify_prompt, "coding")
+        if picked != "new":
+            proj = similar[int(picked)]
+            if _VDB_OK:
+                _vdb.increment_use(proj["id"])
 
-    console.print(Panel(
-        f"[bold cyan]바이브코딩 모드[/bold cyan]\n\n{questions}",
-        border_style="cyan", padding=(1, 2)
-    ))
+            console.print(Panel(
+                f"[bold yellow]기존 프로젝트 기반으로 수정할게요[/bold yellow]\n\n"
+                f"{proj['spec'][:300]}",
+                border_style="yellow", padding=pad, width=w
+            ))
+            try:
+                change_req = Prompt.ask("[bold magenta]어떻게 바꿔드릴까요?[/bold magenta] (Enter=그대로)")
+            except (KeyboardInterrupt, EOFError):
+                return "취소했어요."
 
-    # 사용자 답변 받기
+            spec = proj["spec"]
+            if change_req.strip():
+                with console.status("[bold cyan]수정 사항 반영 중...[/bold cyan]", spinner="dots"):
+                    spec = _tool_ask_specialist("deepseek",
+                        f"기존 스펙:\n{spec}\n\n수정 요청: {change_req}\n\n수정된 스펙만 출력:", "coding")
+
+            with console.status("[bold cyan]코드 생성 중...[/bold cyan]", spinner="dots"):
+                code = _build_code(initial_request, spec)
+
+            output_path = Path.home() / "maestro_vibe" / f"vibe_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            result, ok = _run_with_autofix(code, output_path)
+
+            if ok and _VDB_OK and change_req.strip():
+                _vdb.save_history(proj["id"], change_req, output_path.read_text(encoding="utf-8"))
+
+            return _vibe_done_msg(output_path, result, ok)
+
+    # ── 2단계: 3가지 방향 생성 ────────────────────────────────────
+    with console.status("[bold cyan]방향을 구상 중...[/bold cyan]", spinner="dots"):
+        options_raw = _tool_ask_specialist("deepseek", f"""사용자가 이걸 원합니다: "{initial_request}"
+
+완전히 다른 3가지 방향의 프로그램을 제안하세요.
+방향은 기능/목적/사용방식이 서로 달라야 합니다.
+비개발자가 이해할 수 있는 쉬운 말로.
+
+JSON만 출력:
+{{
+  "options": [
+    {{"title": "한 줄 제목", "desc": "2줄 설명. 어떤 기능인지 구체적으로.", "tags": ["태그1","태그2"]}},
+    {{"title": "한 줄 제목", "desc": "2줄 설명.", "tags": ["태그1","태그2"]}},
+    {{"title": "한 줄 제목", "desc": "2줄 설명.", "tags": ["태그1","태그2"]}}
+  ]
+}}""", "coding")
+
+    # JSON 파싱
+    options = []
     try:
-        answers = Prompt.ask("[bold magenta]답변[/bold magenta]")
-    except (KeyboardInterrupt, EOFError):
-        return "바이브코딩을 취소했어요."
+        m = re.search(r'\{[\s\S]+\}', options_raw)
+        if m:
+            options = json.loads(m.group()).get("options", [])
+    except Exception:
+        pass
 
-    # 2단계: 설계 브리핑
-    design_prompt = f"""요청: {initial_request}
-추가 정보: {answers}
+    if not options:
+        options = [{"title": "기본 버전", "desc": initial_request, "tags": []}]
 
-이걸 만들기 위한 계획을 짧게 설명하세요 (3줄 이내).
-기술 용어 최소화. 비개발자가 이해할 수 있게.
-마지막 줄: "바로 만들어드릴게요!" 또는 "이렇게 만들면 될까요?" 중 선택"""
-
-    design = _tool_ask_specialist("deepseek", design_prompt, "coding")
+    # ── 3단계: 방향 선택 ─────────────────────────────────────────
+    icons = ["1️⃣ ", "2️⃣ ", "3️⃣ "]
+    choices = [
+        {"name": f"{icons[i]}{o['title']}\n    {o['desc'][:60]}", "value": str(i)}
+        for i, o in enumerate(options)
+    ]
+    choices.append({"name": "✏️  직접 설명할게요", "value": "custom"})
 
     console.print(Panel(
-        f"[bold yellow]설계 브리핑[/bold yellow]\n\n{design}",
-        border_style="yellow", padding=(1, 2)
+        "[bold cyan]⚡ 바이브코딩[/bold cyan]  어떤 방향으로 만들까요?",
+        border_style="cyan", padding=pad, width=w
+    ))
+    picked = _select("방향 선택", choices=choices)
+
+    if picked == "custom":
+        try:
+            custom = Prompt.ask("[bold magenta]어떻게 만들고 싶은지 설명해주세요[/bold magenta]")
+        except (KeyboardInterrupt, EOFError):
+            return "취소했어요."
+        selected_opt = {"title": custom, "desc": custom, "tags": []}
+    else:
+        selected_opt = options[int(picked)]
+
+    # ── 4단계: 스펙 생성 + 확인 ──────────────────────────────────
+    with console.status("[bold cyan]설계 중...[/bold cyan]", spinner="dots"):
+        spec = _tool_ask_specialist("deepseek", f"""요청: {initial_request}
+선택한 방향: {selected_opt['title']} — {selected_opt['desc']}
+
+이 프로그램의 상세 스펙을 작성하세요:
+- 핵심 기능 3~5가지
+- 입력/출력 형태
+- 비개발자 언어로 (기술 용어 최소화)
+
+스펙만 출력:""", "coding")
+
+    console.print(Panel(
+        f"[bold yellow]이렇게 만들게요[/bold yellow]\n\n{spec}",
+        border_style="yellow", padding=pad, width=w
     ))
 
-    if not _confirm("진행할까요?", default=True):
-        return "알겠어요! 언제든 다시 말씀해주세요."
+    if not _confirm("이 방향으로 만들까요?", default=True):
+        return "알겠어요! 다시 말씀해주세요."
 
-    # 3단계: 코드 생성
-    code_prompt = f"""요청: {initial_request}
-추가 정보: {answers}
-
-Python으로 완전히 동작하는 코드를 작성하세요.
-- 파일명: vibe_output.py
-- 실행 즉시 동작해야 함
-- 외부 라이브러리는 표준 라이브러리만 사용 (없으면 pip install 안내)
-- 한국어 주석과 출력
-
-코드만 출력 (설명 없이):"""
-
+    # ── 5단계: 코드 생성 + 자동 실행 ─────────────────────────────
     with console.status("[bold cyan]코드 생성 중...[/bold cyan]", spinner="dots"):
-        code_raw = _tool_ask_specialist("deepseek", code_prompt, "coding")
+        code = _build_code(initial_request, spec)
 
-    # 코드 블록 추출
-    import re as _re
-    code_match = _re.search(r'```python\n([\s\S]+?)```', code_raw)
-    code = code_match.group(1) if code_match else code_raw
-
-    # 파일 저장
     output_path = Path.home() / "maestro_vibe" / f"vibe_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(code, encoding="utf-8")
+    result, ok = _run_with_autofix(code, output_path)
 
-    # 4단계: 자동 실행 + 에러 수정 루프 (최대 5회)
-    console.print(f"[dim]생성된 파일: {output_path}[/dim]")
+    # ── 6단계: DB 저장 ────────────────────────────────────────────
+    if ok and _VDB_OK:
+        _vdb.save_project(
+            request=initial_request,
+            spec=spec,
+            code=output_path.read_text(encoding="utf-8"),
+            tags=selected_opt.get("tags", [])
+        )
 
-    for attempt in range(1, 6):
-        with console.status(f"[bold cyan]실행 중... (시도 {attempt}/5)[/bold cyan]", spinner="dots"):
-            result = _tool_run_bash(f"python3 {output_path} 2>&1", timeout=30, _confirmed=True)
+    return _vibe_done_msg(output_path, result, ok)
 
-        if "Error" not in result and "Traceback" not in result:
-            break
 
-        if attempt == 5:
-            return f"자동 수정 5회 시도했지만 해결하지 못했어요.\n\n에러: {result[:300]}\n\n파일 위치: {output_path}"
-
-        # 에러 자동 수정
-        with console.status(f"[bold yellow]에러 수정 중...[/bold yellow]", spinner="dots"):
-            fix_prompt = f"""아래 Python 코드에서 에러가 발생했습니다.
-
-코드:
-{code}
-
-에러:
-{result[:500]}
-
-수정된 완전한 코드만 출력 (설명 없이):"""
-            fixed_raw = _tool_ask_specialist("deepseek", fix_prompt, "coding")
-            fixed_match = _re.search(r'```python\n([\s\S]+?)```', fixed_raw)
-            code = fixed_match.group(1) if fixed_match else fixed_raw
-            output_path.write_text(code, encoding="utf-8")
-
-    # 5단계: 완성 보고
+def _vibe_done_msg(output_path: Path, result: str, ok: bool) -> str:
+    if not ok:
+        return (
+            f"자동 수정 5회 시도했지만 완전히 해결하지 못했어요.\n\n"
+            f"**파일 위치:** `{output_path}`\n"
+            f"어떤 부분을 다르게 할까요? 말씀해주시면 다시 시도할게요."
+        )
     return (
-        f"완성됐어요! 🎉\n\n"
+        f"완성됐어요!\n\n"
         f"**파일 위치:** `{output_path}`\n\n"
-        f"**실행 방법:** `python3 {output_path}`\n\n"
-        f"**실행 결과:**\n```\n{result[:300]}\n```\n\n"
+        f"**실행:** `python3 {output_path}`\n\n"
+        f"**결과 미리보기:**\n```\n{result[:200]}\n```\n\n"
         f"수정하고 싶은 부분 있으면 말씀해주세요!"
     )
 
