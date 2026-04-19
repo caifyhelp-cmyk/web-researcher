@@ -1106,15 +1106,70 @@ def _tool_web_research(topic: str, depth: str = "중간") -> str:
         return f"[웹 리서치 오류: {e}]"
 
 
+def _vercel_cli_deploy(project_dir: str, project_name: str, token: str) -> str:
+    """vercel CLI로 배포 (Next.js SSR 등 서버사이드 프레임워크용)"""
+    import shutil as _sh
+    vercel_bin = _sh.which("vercel")
+    if not vercel_bin:
+        return "[vercel CLI 미설치] npm install -g vercel 실행 후 재시도하세요."
+
+    p = Path(project_dir).expanduser().resolve()
+    env = os.environ.copy()
+    if token:
+        env["VERCEL_TOKEN"] = token
+
+    cmd = [vercel_bin, "--prod", "--yes", "--no-clipboard"]
+    if project_name:
+        cmd += ["--name", project_name]
+    if token:
+        cmd += ["--token", token]
+
+    try:
+        result = subprocess.run(
+            cmd, cwd=str(p), capture_output=True,
+            text=True, timeout=300, env=env
+        )
+        out = result.stdout.strip()
+        err = result.stderr.strip()
+        # URL 추출
+        urls = re.findall(r'https://\S+\.vercel\.app', out + err)
+        url = urls[-1] if urls else ""
+        if url:
+            return f"배포 완료 (vercel CLI)\nURL: {url}"
+        if result.returncode == 0:
+            return f"배포 완료\n{out[-300:]}"
+        return f"[vercel CLI 오류]\n{err[-300:]}"
+    except subprocess.TimeoutExpired:
+        return "[vercel CLI 타임아웃] 5분 초과"
+    except Exception as e:
+        return f"[vercel CLI 오류: {e}]"
+
+
 def _tool_vercel_deploy(project_dir: str, project_name: str = "",
                         framework: str = "") -> str:
     """
     로컬 폴더를 Vercel에 배포. 라이브 URL 반환.
-    project_dir : 배포할 폴더 경로 (HTML/CSS/JS 또는 Next.js 등)
+    project_dir : 배포할 폴더 경로 (소스 루트 또는 빌드 출력 폴더)
     project_name: Vercel 프로젝트 이름 (영문 소문자, 기본: 폴더명)
-    framework   : 프레임워크 힌트 (nextjs / react / vue / svelte / 비워두면 정적)
+    framework   : nextjs / react / vue / svelte / vite / static
+
+    빌드 출력 폴더 자동 감지:
+      Next.js  → .next/  (SSR은 vercel CLI 우선)
+      React    → build/
+      Vite     → dist/
+      정적     → 현재 폴더 그대로
     """
+    import shutil as _sh
     token = VERCEL_TOKEN or os.getenv("VERCEL_TOKEN", "")
+
+    # ── vercel CLI 우선 시도 (SSR 프레임워크에 필요) ────────────────
+    vercel_bin = _sh.which("vercel")
+    fw_lower = (framework or "").lower()
+    needs_cli = fw_lower in ("nextjs", "next", "vue", "svelte", "nuxt")
+
+    if needs_cli and vercel_bin:
+        return _vercel_cli_deploy(project_dir, project_name, token)
+
     if not token:
         return (
             "[Vercel 토큰 없음]\n"
@@ -1126,12 +1181,30 @@ def _tool_vercel_deploy(project_dir: str, project_name: str = "",
     if not p.exists():
         return f"[폴더 없음: {project_dir}]"
 
-    name = (project_name or p.name).lower()
+    # ── 빌드 출력 폴더 자동 탐지 ─────────────────────────────────
+    # 소스 루트가 주어진 경우 빌드 결과물 폴더로 자동 이동
+    build_candidates = {
+        "nextjs": [p / ".next" / "static", p / "out"],   # static export or .next
+        "next":   [p / "out", p / ".next" / "static"],
+        "react":  [p / "build"],
+        "vite":   [p / "dist"],
+        "svelte": [p / "build", p / "dist"],
+        "vue":    [p / "dist"],
+    }
+    if fw_lower in build_candidates:
+        for candidate in build_candidates[fw_lower]:
+            if candidate.exists():
+                p = candidate
+                console.print(f"  [dim]  빌드 출력 폴더 감지: {p}[/dim]")
+                break
+
+    name = (project_name or p.parent.name or p.name).lower()
     name = re.sub(r"[^a-z0-9\-]", "-", name)[:50].strip("-") or "maestro-deploy"
 
     # ── 파일 수집 ─────────────────────────────────────────────────
     files_payload = []
-    skip_dirs  = {".git", "node_modules", ".next", "__pycache__", "dist", ".vercel"}
+    # 빌드 결과물 폴더를 배포할 때는 node_modules/.git 만 제외
+    skip_dirs  = {".git", "node_modules", "__pycache__", ".vercel"}
     skip_exts  = {".pyc", ".pyo", ".DS_Store"}
     max_bytes  = 5 * 1024 * 1024   # 5MB 초과 파일 건너뜀
 
@@ -1458,14 +1531,85 @@ def _tool_analyze_document(path: str, question: str = "") -> str:
         return f"[분석 오류: {e}]\n\n내용 일부:\n{text[:2000]}"
 
 
+def _claude_code_api_fallback(prompt: str, cwd: str) -> str:
+    """
+    Claude Code CLI 없을 때 Claude API로 코드 생성 후 파일 직접 저장.
+    단일 파일 또는 소규모 멀티파일 프로젝트에 적합.
+    """
+    if not ant:
+        return "[Claude Code 미설치, Claude API 키도 없음 — 코딩 불가]"
+
+    system = (
+        "당신은 시니어 풀스택 개발자입니다. "
+        "요청에 따라 완전한 코드를 작성하세요. "
+        "여러 파일이 필요하면 각 파일을 아래 형식으로 구분해 출력하세요:\n\n"
+        "=== 파일명 ===\n코드 내용\n\n"
+        "실제로 동작하는 완전한 코드만 작성하세요."
+    )
+    try:
+        r = ant.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=8000,
+            system=system,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = r.content[0].text.strip()
+    except Exception as e:
+        return f"[Claude API 오류: {e}]"
+
+    # 파일 파싱 및 저장
+    work_dir = Path(cwd).expanduser().resolve()
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = []
+    # "=== 파일명 ===" 형식 파싱
+    file_blocks = re.split(r'={3,}\s*(.+?)\s*={3,}', raw)
+    if len(file_blocks) > 1:
+        # [앞부분, 파일명1, 코드1, 파일명2, 코드2, ...]
+        i = 1
+        while i < len(file_blocks) - 1:
+            fname = file_blocks[i].strip()
+            code  = file_blocks[i+1].strip()
+            if fname and code:
+                fpath = work_dir / fname
+                fpath.parent.mkdir(parents=True, exist_ok=True)
+                fpath.write_text(code, encoding="utf-8")
+                saved.append(fname)
+            i += 2
+    else:
+        # 단일 파일: index.html 또는 main.py로 저장
+        ext = ".html" if "<html" in raw.lower() else ".py"
+        fpath = work_dir / f"main{ext}"
+        fpath.write_text(raw, encoding="utf-8")
+        saved.append(fpath.name)
+
+    if saved:
+        return (
+            f"코드 생성 완료 (Claude API 폴백)\n"
+            f"저장 경로: {work_dir}\n"
+            f"생성 파일: {', '.join(saved)}\n\n"
+            f"[Claude Code CLI 설치 권장: npm install -g @anthropic-ai/claude-code]"
+        )
+    return raw
+
+
 def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> str:
     """
     실제 Claude Code CLI를 subprocess로 호출.
     코딩, 파일 작업, 복잡한 멀티파일 수정에 최적.
     claude -p "prompt" --output-format json --dangerously-skip-permissions
+
+    Claude Code 미설치 시: Claude API 직접 호출로 폴백 (파일 생성까지 처리)
     """
     import shutil
-    claude_bin = shutil.which("claude") or "claude"
+    claude_bin = shutil.which("claude")
+
+    # ── Claude Code CLI 미설치 → API 폴백 ───────────────────────────
+    if not claude_bin:
+        console.print("  [dim][Claude Code 미설치] Claude API + write_file 폴백 모드[/dim]")
+        return _claude_code_api_fallback(prompt, cwd)
+
+    claude_bin = claude_bin or "claude"
 
     work_dir = str(Path(cwd).expanduser().resolve())
 
