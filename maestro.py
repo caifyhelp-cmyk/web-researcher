@@ -188,8 +188,9 @@ def _judge_query_tier(text: str) -> str:
     t = text.lower()
     # 복잡: 리서치·전략·보고서·코딩 등 도구 필요
     complex_kw = ["조사", "분석", "보고서", "비교", "시장", "경쟁사", "전략", "마케팅",
-                  "코드", "코딩", "개발", "구현", "작성", "research", "analyze",
-                  "plan", "앙상블", "여러 llm", "종합"]
+                  "코드", "코딩", "개발", "구현", "작성해", "만들어", "짜줘", "수정",
+                  "리팩터", "버그", "앱", "웹사이트", "research", "analyze",
+                  "plan", "앙상블", "여러 llm", "종합", "함수", "클래스", "api"]
     # 단순: 짧은 질문·날씨·번역·단순 QA
     simple_kw  = ["안녕", "뭐야", "뭔가요", "알려줘", "번역", "설명해", "정의",
                   "이게 뭐", "간단히", "빠르게", "hello", "hi ", "what is", "define"]
@@ -686,7 +687,7 @@ def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
             return "[Claude API 키 없음]"
         try:
             r = ant.messages.create(
-                model="claude-opus-4-7", max_tokens=4000,   # 2026-04-16 최신
+                model="claude-opus-4-6", max_tokens=4000,   # 2026-04-16 최신
                 system="당신은 최고 수준의 분석가이자 전략가입니다. 모든 응답은 한국어로.",
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1624,7 +1625,7 @@ _TOOL_DEFS = [
         "description": (
             "특정 LLM 전문가에게 작업을 위임합니다. 2026년 4월 최신 모델 기준.\n"
             "- o3      : 최상위 추론. 수학·논리·복잡한 단계별 분석 (가장 강력, 느림)\n"
-            "- claude  : claude-opus-4-7. 긴 문서·보고서·전략 인사이트·세밀한 글쓰기\n"
+            "- claude  : claude-opus-4-6. 긴 문서·보고서·전략 인사이트·세밀한 글쓰기\n"
             "- gemini  : gemini-2.5-flash (thinking 내장). 멀티모달·대용량 컨텍스트·문서 요약\n"
             "- gpt-4.1 : 구조화 출력·데이터 추출·코딩·instruction 정밀 수행\n"
             "- deepseek: 복잡한 추론·알고리즘·코드 분석 (저비용 추론)\n"
@@ -1758,10 +1759,10 @@ _TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "ask_claude_code",
         "description": (
-            "실제 Claude Code CLI를 호출합니다. "
-            "파일 생성/수정/삭제, 복잡한 코딩 작업, 멀티파일 리팩토링, "
-            "프로그램 전체 구현 등 코딩 관련 작업에 최우선 사용하세요. "
-            "Claude Code가 직접 파일을 읽고 수정하고 테스트까지 수행합니다."
+            "【현존 최강 코딩 에이전트】 Claude Code CLI를 호출합니다. "
+            "코드 작성·버그 수정·리팩터링·멀티파일 구현·테스트 실행·앱 전체 개발 → 반드시 이 도구 먼저. "
+            "ask_specialist(claude)로 코딩하지 마세요 — Claude Code가 파일 접근+실행까지 통합되어 10배 강합니다. "
+            "사용 예: '앱 만들어줘', '이 버그 고쳐줘', '함수 짜줘', 'API 서버 구현', '리팩터링해줘'."
         ),
         "parameters": {"type": "object", "properties": {
             "prompt":  {"type": "string", "description": "Claude Code에게 전달할 작업 지시"},
@@ -1906,13 +1907,16 @@ web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로
 **전략/마케팅 판단** → ask_brain 먼저 호출 → 이어서 ask_specialist(model="claude", ...) 로 전략 보고서 작성.
 두 결과를 합쳐서 사용자에게 전달.
 
-**코딩/파일 작업** → ask_claude_code 최우선. 직접 write_file/edit_file은 짧은 수정에만.
+**코딩/개발/파일 작업** → **ask_claude_code 최우선 (현존 최강 코딩 에이전트)**
+Claude Code는 파일 읽기·쓰기·수정·테스트 실행까지 통합된 실제 개발 환경입니다.
+"코드 짜줘", "버그 고쳐줘", "앱 만들어줘", "함수 작성", "리팩터링" → ask_claude_code 즉시 호출.
+절대로 ask_specialist(claude)로 코딩하지 마세요. Claude Code가 10배 강합니다.
 
 **최신 뉴스/실시간 정보** → "최근", "요즘", "2026년", "지금" 키워드 → ask_specialist(model="grok", ...) 우선.
 
 **복잡한 추론/수학/논리** → ask_specialist(model="o3", ...). 단순 분석은 ask_specialist(model="o4-mini", ...).
 
-**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing"). (claude-opus-4-7 사용)
+**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing"). (claude-opus-4-6 사용)
 
 **대용량 컨텍스트/멀티모달/문서 요약** → ask_specialist(model="gemini", ...). (gemini-2.5-flash thinking 내장)
 
@@ -1920,9 +1924,11 @@ web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로
 
 **모델 선택이 불확실할 때** → ask_specialist(model="auto", category="[해당 카테고리]").
 
-**최고 품질이 필요할 때 (앙상블)** → ask_ensemble 호출. Claude + Gemini + DeepSeek 병렬 → GPT-4.1 종합.
-사용자가 "최고 품질로", "모든 AI 동원해서", "앙상블로", "가장 잘 해줘" 같은 표현을 쓰면 반드시 사용.
-또는 전략 보고서·시장 분석·중요 의사결정 문서 작성 시 ask_ensemble 우선 검토.
+**전략·시장 분석·보고서 작성** → ask_ensemble이 기본값 (Default).
+ask_ensemble = Claude-opus-4-6 + Gemini-2.5-Flash + DeepSeek-R2 병렬 → GPT-4.1 종합.
+리서치 결과가 있으면 그것을 prompt에 담아 ask_ensemble에 전달하세요.
+"시장 분석", "전략", "보고서", "제안서", "경쟁사 분석", "마케팅 플랜" → ask_ensemble 호출.
+단일 모델(ask_specialist)은 앙상블보다 품질이 낮습니다. 중요한 작업에는 항상 앙상블 우선.
 
 **도구 실패 시 필수 행동** → 실패 사실을 사용자에게 반드시 명시. "도구가 실패해 학습 데이터로 답했습니다"라고 밝힐 것. 오류를 숨기고 아는 척 금지.
 
@@ -1959,9 +1965,11 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
         content = user_input + "\n(반드시 한국어로 답변)"
 
-    # ── 비용 티어 라우팅: 단순 질문은 o4-mini 직접 답변 ─────────────
+    # ── 비용 티어 라우팅 ──────────────────────────────────────────
     tier = _judge_query_tier(user_input)
+
     if tier == "simple" and not history:
+        # 단순 질문: o4-mini 직접 응답 (빠르고 저렴)
         if oai:
             try:
                 console.print("  [dim][TIER:simple] o4-mini 직접 응답[/dim]")
@@ -1976,6 +1984,18 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
                 return r.choices[0].message.content.strip()
             except Exception:
                 pass  # 실패 시 표준 루프로 폴백
+
+    elif tier == "complex":
+        # 복잡 쿼리: gpt-4.1에게 "앙상블 먼저 호출" 강제 지시
+        console.print("  [dim][TIER:complex] 앙상블 우선 모드[/dim]")
+        messages.insert(1, {
+            "role": "system",
+            "content": (
+                "[TIER=complex 감지] 이 요청은 전략·분석·보고서 등 고품질 작업입니다. "
+                "반드시 첫 번째 도구로 ask_ensemble을 호출해 Claude+Gemini+DeepSeek 의견을 수집하세요. "
+                "단, 코딩/개발/파일 작성 요청이면 ask_claude_code를 먼저 호출하세요."
+            )
+        })
 
     # ── 응답 캐시: 유사도 97% 이상만, user 메시지 끝에 참고로 첨부 ──
     if not history:   # 첫 턴에만 (문맥 없을 때)
@@ -2179,7 +2199,7 @@ def main():
     # 연결된 모델 확인
     models = []
     if oai:       models.append("GPT-4.1 / o3 / o4-mini")
-    if ant:       models.append("Claude Opus 4.7")
+    if ant:       models.append("Claude Opus 4.6")
     if deepseek:  models.append("DeepSeek-R2")
     if grok_ai:   models.append("Grok-3")
     if gemini_ai: models.append("Gemini-2.5-Flash")

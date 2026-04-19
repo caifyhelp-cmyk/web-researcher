@@ -12,7 +12,7 @@ _KEYS = {
     # ── OpenAI (GPT-4.1 오케스트레이터 + o3 추론 + o4-mini 경량)
     "OPENAI_API_KEY":      "",   # https://platform.openai.com/api-keys
 
-    # ── Anthropic Claude Opus 4.7 (전략·문서·긴 분석)
+    # ── Anthropic Claude Opus 4.6 (전략·문서·긴 분석)
     "ANTHROPIC_API_KEY":   "",   # https://console.anthropic.com/
 
     # ── DeepSeek R2 (추론·알고리즘·쿼리 생성)

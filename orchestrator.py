@@ -30,7 +30,7 @@ CATEGORY_DESC = {
 }
 
 # 콜드 스타트용 기본 캐시 — 첫 실행 시 DB에 시드됨
-# v4: 2026-04 최신 모델 반영 (gpt-4.1, claude-opus-4-7, gemini-2.5-flash, o3, o4-mini)
+# v4: 2026-04 최신 모델 반영 (gpt-4.1, claude-opus-4-6, gemini-2.5-flash, o3, o4-mini)
 _DEFAULT_CACHE = {
     "query_generation": {"winner": "deepseek",  "meta_score": 88, "self_score": 85},
     "url_filtering":    {"winner": "gpt-4.1",   "meta_score": 92, "self_score": 88},

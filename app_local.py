@@ -302,7 +302,7 @@ def call_claude(prompt: str, system: str = "") -> str:
         return call_gpt(prompt, system)
     try:
         r = claude_c.messages.create(
-            model="claude-opus-4-7", max_tokens=4000,   # 2026-04-16 최신
+            model="claude-opus-4-6", max_tokens=4000,   # 2026-04 최신 (Opus 4.6)
             system=system or "당신은 전문 리서치 분석가입니다.",
             messages=[{"role": "user", "content": prompt}]
         )
