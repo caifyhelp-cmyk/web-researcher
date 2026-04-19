@@ -73,8 +73,17 @@ def _select(message: str, choices: list, default: str = None) -> str:
 
     if _HAS_Q and not _IS_MOBILE:
         display = [{"name": n, "value": v} for n, v in zip(choice_names, choice_values)]
+        default_name = None
+        if default in choice_values:
+            idx = choice_values.index(default)
+            candidate = choice_names[idx]
+            if any(c["name"] == candidate for c in display):
+                default_name = candidate
         console.print(_NAV_HINT)
-        result = questionary.select(message, choices=display, default=default, style=_Q_STYLE).ask()
+        try:
+            result = questionary.select(message, choices=display, default=default_name, style=_Q_STYLE).ask()
+        except ValueError:
+            result = questionary.select(message, choices=display, default=None, style=_Q_STYLE).ask()
         return result if result is not None else (default or choice_values[0])
 
     # 모바일 / 폴백: 번호 선택
