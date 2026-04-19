@@ -177,6 +177,94 @@ def _get_selenium_driver():
         _selenium_ok = False
         return None
 
+# ── 쿼리 복잡도 티어 판단 ─────────────────────────────────────────
+def _judge_query_tier(text: str) -> str:
+    """
+    사용자 입력의 복잡도를 판단해 'simple' / 'medium' / 'complex' 반환.
+    simple  → o4-mini 직접 답변 (빠르고 저렴)
+    medium  → gpt-4.1 표준 루프
+    complex → gpt-4.1 루프 + 앙상블 권장
+    """
+    t = text.lower()
+    # 복잡: 리서치·전략·보고서·코딩 등 도구 필요
+    complex_kw = ["조사", "분석", "보고서", "비교", "시장", "경쟁사", "전략", "마케팅",
+                  "코드", "코딩", "개발", "구현", "작성", "research", "analyze",
+                  "plan", "앙상블", "여러 llm", "종합"]
+    # 단순: 짧은 질문·날씨·번역·단순 QA
+    simple_kw  = ["안녕", "뭐야", "뭔가요", "알려줘", "번역", "설명해", "정의",
+                  "이게 뭐", "간단히", "빠르게", "hello", "hi ", "what is", "define"]
+    if any(k in t for k in complex_kw):
+        return "complex"
+    if len(text) < 30 or any(k in t for k in simple_kw):
+        return "simple"
+    return "medium"
+
+
+# ── 앙상블 병렬 호출 ──────────────────────────────────────────────
+def _tool_ask_ensemble(prompt: str, category: str = "strategy_insight") -> str:
+    """
+    claude + gemini + deepseek 를 병렬 호출 → gpt-4.1 이 종합.
+    최고 품질이 필요한 전략·분석·문서 작업에 사용.
+    """
+    import concurrent.futures
+
+    models = [
+        ("claude",   lambda p: _tool_ask_specialist("claude",   p, category)),
+        ("gemini",   lambda p: _tool_ask_specialist("gemini",   p, category)),
+        ("deepseek", lambda p: _tool_ask_specialist("deepseek", p, category)),
+    ]
+
+    results: dict[str, str] = {}
+
+    def _call(name, fn):
+        try:
+            return name, fn(prompt)
+        except Exception as e:
+            return name, f"[{name} 오류: {e}]"
+
+    console.print("  [ENSEMBLE] [dim]Claude · Gemini · DeepSeek 병렬 호출 중...[/dim]")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        futs = {ex.submit(_call, name, fn): name for name, fn in models}
+        for fut in concurrent.futures.as_completed(futs):
+            name, res = fut.result()
+            results[name] = res
+            console.print(f"    [dim]✓ {name} 완료[/dim]")
+
+    # 유효한 응답만 수집
+    valid = {k: v for k, v in results.items() if not v.startswith("[") or "오류" not in v}
+    if not valid:
+        return "[앙상블: 모든 모델 실패]\n" + "\n".join(f"{k}: {v}" for k, v in results.items())
+
+    if len(valid) == 1:
+        return list(valid.values())[0]
+
+    # gpt-4.1 이 종합
+    if not oai:
+        # OpenAI 없으면 첫 번째 결과 반환
+        return list(valid.values())[0]
+
+    synthesis_prompt = (
+        "다음은 같은 질문에 대한 여러 AI의 답변입니다. "
+        "각 답변의 핵심을 통합해 가장 완성도 높은 한국어 답변을 작성하세요. "
+        "중복 제거, 상충 시 더 구체적인 것 채택, 누락된 인사이트 보완.\n\n"
+        f"[원래 질문]\n{prompt}\n\n"
+    )
+    for name, res in valid.items():
+        synthesis_prompt += f"[{name.upper()} 답변]\n{res[:2000]}\n\n"
+
+    try:
+        console.print("  [ENSEMBLE] [dim]gpt-4.1 종합 중...[/dim]")
+        r = oai.chat.completions.create(
+            model="gpt-4.1",
+            messages=[{"role": "user", "content": synthesis_prompt}],
+            max_tokens=4000,
+            temperature=0.4
+        )
+        return r.choices[0].message.content.strip()
+    except Exception as e:
+        return list(valid.values())[0] + f"\n[종합 오류: {e}]"
+
+
 # ── 회의록 자동화 경로 ────────────────────────────────────────────
 _MEETING_AUTO_DIR = Path(os.path.expanduser("~")) / "Desktop" / "meeting_auto"
 
@@ -1113,12 +1201,6 @@ def _tool_meeting_to_notion(audio_path: str = "", transcript: str = "",
     meeting_date: 회의 날짜 (기본: 오늘)
     speaker_map: 화자 매핑 JSON 문자열 '{"SPEAKER_00":"조경일","SPEAKER_01":"소지민"}'
     """
-    import sys as _sys
-
-    meeting_dir = str(_MEETING_AUTO_DIR)
-    if meeting_dir not in _sys.path:
-        _sys.path.insert(0, meeting_dir)
-
     if not meeting_date:
         meeting_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -1130,83 +1212,62 @@ def _tool_meeting_to_notion(audio_path: str = "", transcript: str = "",
         except Exception:
             pass
 
-    named_transcript = []
+    # ── 서비스 패키지 import ──────────────────────────────────────
+    try:
+        from services.transcribe    import transcribe_audio
+        from services.diarize       import diarize_transcript
+        from services.analyze       import analyze_meeting
+        from services.notion_client import push_to_notion
+    except ImportError as e:
+        return f"[회의록 모듈 로드 실패: {e}]"
+
+    labeled_text = ""
 
     # ── 음성 파일 처리 ────────────────────────────────────────────
     if audio_path:
         p = Path(audio_path).expanduser()
         if not p.exists():
             return f"[파일 없음: {audio_path}]"
-        try:
-            from services.transcribe import transcribe_audio
-            from services.diarize   import convert_to_wav, diarize_audio, merge_transcript_speakers
-            from services.analyze   import apply_speaker_names, analyze_meeting
-            from services.notion_client import create_meeting_page
-        except ImportError as e:
-            return f"[회의록 모듈 로드 실패: {e}]\n meeting_auto 폴더 확인: {meeting_dir}"
-
-        console.print("  [dim]  음성 변환 중 (WAV)...[/dim]")
-        wav_path = convert_to_wav(str(p))
 
         console.print("  [dim]  STT 변환 중 (Whisper)...[/dim]")
-        segments = transcribe_audio(wav_path)
+        raw_text = transcribe_audio(str(p))
+        if raw_text.startswith("[오류]"):
+            return raw_text
 
-        console.print("  [dim]  화자 분리 중...[/dim]")
-        speaker_segments = diarize_audio(wav_path)
-        merged = merge_transcript_speakers(segments, speaker_segments)
-
-        if spk_map:
-            named_transcript = apply_speaker_names(merged, spk_map)
-        else:
-            named_transcript = merged
+        console.print("  [dim]  화자 분리 중 (GPT-4.1-mini)...[/dim]")
+        labeled_text = diarize_transcript(raw_text, spk_map if spk_map else None)
 
     # ── 텍스트 직접 입력 ──────────────────────────────────────────
     elif transcript:
-        try:
-            from services.analyze import analyze_meeting
-            from services.notion_client import create_meeting_page
-        except ImportError as e:
-            return f"[회의록 모듈 로드 실패: {e}]"
-        # 텍스트를 세그먼트로 변환
-        for line in transcript.strip().splitlines():
-            if ":" in line:
-                spk, txt = line.split(":", 1)
-                named_transcript.append({"speaker": spk.strip(), "text": txt.strip()})
-            else:
-                named_transcript.append({"speaker": "발언자", "text": line.strip()})
+        labeled_text = diarize_transcript(transcript, spk_map if spk_map else None)
+
     else:
         return "[audio_path 또는 transcript 중 하나는 필수입니다]"
 
-    if not named_transcript:
+    if not labeled_text.strip():
         return "[변환된 내용이 없습니다]"
 
-    console.print(f"  [dim]  Gemini 분석 중 ({len(named_transcript)}개 발언)...[/dim]")
-    try:
-        from services.analyze import analyze_meeting
-        from services.notion_client import create_meeting_page
-    except ImportError as e:
-        return f"[모듈 로드 실패: {e}]"
-
-    analysis = analyze_meeting(named_transcript, meeting_date)
+    console.print(f"  [dim]  회의 분석 중 (GPT-4.1)...[/dim]")
+    analysis = analyze_meeting(labeled_text, meeting_date)
 
     console.print("  [dim]  노션 페이지 생성 중...[/dim]")
-    page_url = create_meeting_page(analysis)
+    result = push_to_notion(analysis, labeled_text)
 
-    if page_url:
-        return f"노션 회의록 생성 완료\n날짜: {meeting_date}\n발언: {len(named_transcript)}개\nURL: {page_url}"
-    else:
-        # URL 없어도 분석 결과 반환
-        teams = analysis.get("teams", {})
-        lines = [f"회의록 분석 완료 ({meeting_date})  — 노션 URL 없음\n"]
-        for team, data in teams.items():
-            items = data.get("agenda_items", [])
-            if items:
-                lines.append(f"[{team}]")
-                for item in items:
-                    lines.append(f"  {item.get('title','')}")
-                    for pt in item.get("points", []):
-                        lines.append(f"    - {pt}")
-        return "\n".join(lines)
+    # 오류가 아니면 성공 요약 추가
+    if not result.startswith("[오류]") and not result.startswith("[Notion API 오류"):
+        summary = analysis.get("summary", "")
+        actions = analysis.get("action_items", [])
+        action_str = "\n".join(
+            f"  • {a.get('task','')} — {a.get('owner','')} ({a.get('due','')})"
+            for a in actions[:5]
+        )
+        return (
+            f"{result}\n\n"
+            f"📋 회의 요약: {summary[:200]}\n"
+            + (f"\n🎯 액션 아이템:\n{action_str}" if action_str else "")
+        )
+
+    return result
 
 
 def _tool_analyze_document(path: str, question: str = "") -> str:
@@ -1424,6 +1485,9 @@ def _exec_tool(name: str, args: dict) -> str:
         "ask_specialist":   lambda: _tool_ask_specialist(
                                 args.get("model", "gpt-4o"), args.get("prompt", ""),
                                 args.get("category", "")),
+        "ask_ensemble":     lambda: _tool_ask_ensemble(
+                                args.get("prompt", ""),
+                                args.get("category", "strategy_insight")),
         "ask_claude_code":  lambda: _tool_ask_claude_code(
                                 args.get("prompt", ""),
                                 args.get("cwd", "."),
@@ -1578,6 +1642,21 @@ _TOOL_DEFS = [
                          "enum": ["query_generation", "url_filtering", "data_extraction",
                                   "market_analysis", "strategy_insight", "document_writing", "quick_qa"]}
         }, "required": ["model", "prompt"]}
+    }},
+    {"type": "function", "function": {
+        "name": "ask_ensemble",
+        "description": (
+            "Claude + Gemini + DeepSeek 를 병렬 호출한 뒤 GPT-4.1 이 결과를 종합합니다. "
+            "단일 모델보다 훨씬 높은 품질이 필요한 전략 분석·시장 조사·보고서 작성에 사용하세요. "
+            "속도는 느리지만 현존 최강 품질을 목표로 합니다."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "prompt":   {"type": "string", "description": "앙상블에게 위임할 상세 프롬프트"},
+            "category": {"type": "string",
+                         "description": "작업 카테고리 (오케스트레이터 학습에 사용)",
+                         "enum": ["query_generation", "url_filtering", "data_extraction",
+                                  "market_analysis", "strategy_insight", "document_writing", "quick_qa"]}
+        }, "required": ["prompt"]}
     }},
     {"type": "function", "function": {
         "name": "meeting_to_notion",
@@ -1841,6 +1920,10 @@ web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로
 
 **모델 선택이 불확실할 때** → ask_specialist(model="auto", category="[해당 카테고리]").
 
+**최고 품질이 필요할 때 (앙상블)** → ask_ensemble 호출. Claude + Gemini + DeepSeek 병렬 → GPT-4.1 종합.
+사용자가 "최고 품질로", "모든 AI 동원해서", "앙상블로", "가장 잘 해줘" 같은 표현을 쓰면 반드시 사용.
+또는 전략 보고서·시장 분석·중요 의사결정 문서 작성 시 ask_ensemble 우선 검토.
+
 **도구 실패 시 필수 행동** → 실패 사실을 사용자에게 반드시 명시. "도구가 실패해 학습 데이터로 답했습니다"라고 밝힐 것. 오류를 숨기고 아는 척 금지.
 
 **응답 구체성 원칙**
@@ -1875,6 +1958,24 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     content = user_input
     if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
         content = user_input + "\n(반드시 한국어로 답변)"
+
+    # ── 비용 티어 라우팅: 단순 질문은 o4-mini 직접 답변 ─────────────
+    tier = _judge_query_tier(user_input)
+    if tier == "simple" and not history:
+        if oai:
+            try:
+                console.print("  [dim][TIER:simple] o4-mini 직접 응답[/dim]")
+                r = oai.chat.completions.create(
+                    model="o4-mini",
+                    messages=[
+                        {"role": "system", "content": "당신은 MAESTRO 어시스턴트입니다. 한국어로 간결하게 답변하세요."},
+                        {"role": "user", "content": content}
+                    ],
+                    max_tokens=1000
+                )
+                return r.choices[0].message.content.strip()
+            except Exception:
+                pass  # 실패 시 표준 루프로 폴백
 
     # ── 응답 캐시: 유사도 97% 이상만, user 메시지 끝에 참고로 첨부 ──
     if not history:   # 첫 턴에만 (문맥 없을 때)
@@ -1973,6 +2074,7 @@ _TOOL_ICONS = {
     "web_fetch":       "[FETCH]",
     "ask_brain":       "[BRAIN]",
     "ask_specialist":  "[LLM]",
+    "ask_ensemble":    "[ENSEMBLE]",
     "ask_claude_code": "[CLAUDE CODE]",
     "web_research":    "[RESEARCH]",
     "save_research":   "[SAVE]",
@@ -2006,6 +2108,9 @@ def _show_tool_call(name: str, args: dict):
         cat   = args.get("category", "")
         label = f"{model}({cat})" if model == "auto" and cat else model
         console.print(f"  {icon} [dim]{label} 전문가에게 위임 중...[/dim]")
+    elif name == "ask_ensemble":
+        cat = args.get("category", "")
+        console.print(f"  {icon} [bold magenta]앙상블(Claude+Gemini+DeepSeek→GPT-4.1){' ['+cat+']' if cat else ''} 시작[/bold magenta]")
     elif name == "ask_claude_code":
         cwd = args.get("cwd", ".")
         preview = args.get("prompt", "")[:60]

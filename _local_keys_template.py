@@ -29,6 +29,10 @@ _KEYS = {
     "NAVER_CLIENT_ID":     "",   # https://developers.naver.com/ (검색 API)
     "NAVER_CLIENT_SECRET": "",
     "VERCEL_TOKEN":        "",   # https://vercel.com/account/tokens
+
+    # ── Notion (회의록 자동 기록)
+    "NOTION_TOKEN":        "",   # https://www.notion.so/my-integrations → Integration Token
+    "NOTION_PARENT_ID":    "",   # 회의록을 저장할 Notion 페이지 또는 DB ID
 }
 
 for _k, _v in _KEYS.items():
