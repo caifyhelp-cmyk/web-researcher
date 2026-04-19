@@ -109,8 +109,10 @@ jobs:
       - name: APK 빌드 (${{ steps.build_type.outputs.type }})
         working-directory: mobile
         run: |
-          buildozer android ${{ steps.build_type.outputs.type }} 2>&1 | \
-            grep -v "^DEBUG:" | tail -150
+          set -o pipefail
+          buildozer android ${{ steps.build_type.outputs.type }} 2>&1 | tee build.log
+          echo "--- 마지막 100줄 ---"
+          tail -100 build.log
 
       # ── 9. APK 검증 ──────────────────────────────────────────
       - name: APK 파일 검증

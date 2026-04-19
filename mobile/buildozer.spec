@@ -92,7 +92,7 @@ fullscreen = 0
 android.entrypoint = org.kivy.android.PythonActivity
 
 [buildozer]
-log_level = 1
+log_level = 2
 warn_on_root = 1
 build_dir    = .buildozer
 bin_dir      = bin
