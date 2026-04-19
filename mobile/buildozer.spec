@@ -48,7 +48,8 @@ android.permissions = INTERNET
 
 # API 레벨
 android.api    = 34
-android.minapi = 26    # Android 8.0 Oreo 이상 (ANDROID_ID 신뢰성 보장)
+# Android 8.0 Oreo 이상 (ANDROID_ID 신뢰성 보장)
+android.minapi = 26
 android.ndk    = 25b
 android.sdk    = 34
 android.accept_sdk_license = True
