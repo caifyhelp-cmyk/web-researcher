@@ -1662,6 +1662,135 @@ def _tool_ask_claude_code(prompt: str, cwd: str = ".", timeout: int = 180) -> st
         return f"[Claude Code 오류: {e}]"
 
 
+# ══════════════════════════════════════════════
+#  바이브 코딩 모드
+# ══════════════════════════════════════════════
+
+_VIBE_TRIGGERS = [
+    "만들어줘", "만들고 싶어", "개발해줘", "짜줘", "코딩해줘",
+    "프로그램", "앱 만들", "툴 만들", "스크립트", "자동화 만들",
+    "웹사이트 만들", "봇 만들", "만들어볼까", "구현해줘",
+]
+
+def _detect_vibe_need(text: str) -> bool:
+    """사용자 입력에서 바이브코딩 필요성 감지"""
+    return any(t in text for t in _VIBE_TRIGGERS)
+
+
+def _vibe_coding_session(initial_request: str, history: list) -> str:
+    """
+    비개발자 바이브코딩 플로우:
+    요구사항 구체화 → 설계 브리핑 → 코드 생성 → 자동 에러 수정 → 완성 보고
+    """
+    client = deepseek or ant_fallback() if not deepseek else deepseek
+
+    # 1단계: 요구사항 구체화 (질문 최대 2개)
+    clarify_prompt = f"""사용자가 이걸 만들고 싶어합니다: "{initial_request}"
+
+비개발자도 쉽게 답할 수 있는 핵심 질문을 최대 2개만 하세요.
+기술 용어 금지. 짧고 친근하게.
+형식: 질문만 출력 (설명 없이)"""
+
+    questions = _tool_ask_specialist("deepseek", clarify_prompt, "coding")
+
+    console.print(Panel(
+        f"[bold cyan]바이브코딩 모드[/bold cyan]\n\n{questions}",
+        border_style="cyan", padding=(1, 2)
+    ))
+
+    # 사용자 답변 받기
+    try:
+        answers = Prompt.ask("[bold magenta]답변[/bold magenta]")
+    except (KeyboardInterrupt, EOFError):
+        return "바이브코딩을 취소했어요."
+
+    # 2단계: 설계 브리핑
+    design_prompt = f"""요청: {initial_request}
+추가 정보: {answers}
+
+이걸 만들기 위한 계획을 짧게 설명하세요 (3줄 이내).
+기술 용어 최소화. 비개발자가 이해할 수 있게.
+마지막 줄: "바로 만들어드릴게요!" 또는 "이렇게 만들면 될까요?" 중 선택"""
+
+    design = _tool_ask_specialist("deepseek", design_prompt, "coding")
+
+    console.print(Panel(
+        f"[bold yellow]설계 브리핑[/bold yellow]\n\n{design}",
+        border_style="yellow", padding=(1, 2)
+    ))
+
+    try:
+        confirm = Prompt.ask("[bold magenta]진행할까요?[/bold magenta] (Enter=yes / n=취소)", default="y").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        confirm = "n"
+
+    if confirm == "n":
+        return "알겠어요, 언제든 다시 말씀해주세요!"
+
+    # 3단계: 코드 생성
+    code_prompt = f"""요청: {initial_request}
+추가 정보: {answers}
+
+Python으로 완전히 동작하는 코드를 작성하세요.
+- 파일명: vibe_output.py
+- 실행 즉시 동작해야 함
+- 외부 라이브러리는 표준 라이브러리만 사용 (없으면 pip install 안내)
+- 한국어 주석과 출력
+
+코드만 출력 (설명 없이):"""
+
+    with console.status("[bold cyan]코드 생성 중...[/bold cyan]", spinner="dots"):
+        code_raw = _tool_ask_specialist("deepseek", code_prompt, "coding")
+
+    # 코드 블록 추출
+    import re as _re
+    code_match = _re.search(r'```python\n([\s\S]+?)```', code_raw)
+    code = code_match.group(1) if code_match else code_raw
+
+    # 파일 저장
+    output_path = Path.home() / "maestro_vibe" / f"vibe_{datetime.now().strftime('%Y%m%d_%H%M%S')}.py"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(code, encoding="utf-8")
+
+    # 4단계: 자동 실행 + 에러 수정 루프 (최대 5회)
+    console.print(f"[dim]생성된 파일: {output_path}[/dim]")
+
+    for attempt in range(1, 6):
+        with console.status(f"[bold cyan]실행 중... (시도 {attempt}/5)[/bold cyan]", spinner="dots"):
+            result = _tool_run_bash(f"python3 {output_path} 2>&1", timeout=30, _confirmed=True)
+
+        if "Error" not in result and "Traceback" not in result:
+            break
+
+        if attempt == 5:
+            return f"자동 수정 5회 시도했지만 해결하지 못했어요.\n\n에러: {result[:300]}\n\n파일 위치: {output_path}"
+
+        # 에러 자동 수정
+        with console.status(f"[bold yellow]에러 수정 중...[/bold yellow]", spinner="dots"):
+            fix_prompt = f"""아래 Python 코드에서 에러가 발생했습니다.
+
+코드:
+{code}
+
+에러:
+{result[:500]}
+
+수정된 완전한 코드만 출력 (설명 없이):"""
+            fixed_raw = _tool_ask_specialist("deepseek", fix_prompt, "coding")
+            fixed_match = _re.search(r'```python\n([\s\S]+?)```', fixed_raw)
+            code = fixed_match.group(1) if fixed_match else fixed_raw
+            output_path.write_text(code, encoding="utf-8")
+
+    # 5단계: 완성 보고
+    return (
+        f"완성됐어요! 🎉\n\n"
+        f"**파일 위치:** `{output_path}`\n\n"
+        f"**실행 방법:** `python3 {output_path}`\n\n"
+        f"**실행 결과:**\n```\n{result[:300]}\n```\n\n"
+        f"수정하고 싶은 부분 있으면 말씀해주세요!"
+    )
+
+
 def _exec_tool(name: str, args: dict) -> str:
     """도구 디스패처"""
     dispatch = {
@@ -2509,8 +2638,22 @@ def main():
         border_style="bright_magenta", padding=(1, 6)
     ))
 
-    if not oai:
-        console.print("[red]OpenAI API 키가 없습니다. _local_keys.py 또는 환경변수를 확인하세요.[/red]")
+    # ── 모드 선택 ────────────────────────────────────────────────
+    console.print("\n[bold]모드를 선택하세요:[/bold]")
+    console.print("  [cyan]1[/cyan]  일반 대화 모드  — 리서치, 분석, 문서 작업 등")
+    console.print("  [cyan]2[/cyan]  바이브코딩 모드 — 아이디어만 말하면 프로그램을 만들어드려요\n")
+    try:
+        mode_choice = Prompt.ask("  선택", choices=["1", "2"], default="1").strip()
+    except (KeyboardInterrupt, EOFError):
+        mode_choice = "1"
+    _vibe_mode = (mode_choice == "2")
+    if _vibe_mode:
+        console.print("[bold cyan]바이브코딩 모드[/bold cyan]로 시작합니다. 만들고 싶은 걸 말씀해주세요!\n")
+    else:
+        console.print("[dim]일반 모드로 시작합니다.[/dim]\n")
+
+    if not oai and not deepseek and not ant:
+        console.print("[red]API 키가 없습니다. _local_keys.py 또는 환경변수를 확인하세요.[/red]")
         return
 
     # ── 세션 선택 ─────────────────────────────────────────────────
@@ -2609,10 +2752,28 @@ def main():
 
         console.print()
 
-        with console.status("[bold magenta]MAESTRO 처리 중...[/bold magenta]", spinner="dots"):
-            start = time.time()
-            response = run_agent(user_input, history)
-            elapsed = time.time() - start
+        # ── 바이브코딩 감지 (일반 모드에서도 자동 제안) ──────────
+        if not _vibe_mode and _detect_vibe_need(user_input):
+            console.print(Panel(
+                "[bold cyan]바이브코딩[/bold cyan]이 필요한 것 같은데 맞나요?\n"
+                "[dim]맞다면 바이브코딩 모드로 진입해서 바로 만들어드릴게요.[/dim]",
+                border_style="cyan", padding=(1, 2)
+            ))
+            try:
+                vibe_confirm = Prompt.ask("  [dim]바이브코딩 모드로 진입할까요?[/dim]", choices=["y", "n"], default="y").strip()
+            except (KeyboardInterrupt, EOFError):
+                vibe_confirm = "n"
+            if vibe_confirm == "y":
+                _vibe_mode = True
+
+        if _vibe_mode and _detect_vibe_need(user_input):
+            response = _vibe_coding_session(user_input, history)
+            elapsed = 0.0
+        else:
+            with console.status("[bold magenta]MAESTRO 처리 중...[/bold magenta]", spinner="dots"):
+                start = time.time()
+                response = run_agent(user_input, history)
+                elapsed = time.time() - start
 
         console.print()
         console.print(Panel(
