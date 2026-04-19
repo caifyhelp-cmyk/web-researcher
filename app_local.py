@@ -255,7 +255,7 @@ def call_brain_agent(situation: str) -> str:
 # ═══════════════════════════════════════════════════════
 #  LLM 호출
 # ═══════════════════════════════════════════════════════
-def call_gpt(prompt: str, system: str = "", model: str = "gpt-4o-mini",
+def call_gpt(prompt: str, system: str = "", model: str = "gpt-4.1-mini",
              temperature: float = 1.0, max_tokens: int = 2000) -> str:
     if not oai:
         return "[OpenAI 키 없음]"
@@ -286,15 +286,15 @@ def call_model(category: str, prompt: str, system: str = "",
 
     if model == "claude":
         return call_claude(prompt, system)
-    elif model == "gpt-4o":
-        return call_gpt(prompt, system, model="gpt-4o",
+    elif model in ("gpt-4o", "gpt-4.1"):
+        return call_gpt(prompt, system, model="gpt-4.1",
                         temperature=temperature, max_tokens=max_tokens)
     elif model == "deepseek":
         return call_deepseek(prompt)
     elif model == "gemini":
         return call_gemini(prompt)
     else:
-        return call_gpt(prompt, system, model="gpt-4o-mini",
+        return call_gpt(prompt, system, model="gpt-4.1-mini",
                         temperature=temperature, max_tokens=max_tokens)
 
 def call_claude(prompt: str, system: str = "") -> str:
@@ -302,7 +302,7 @@ def call_claude(prompt: str, system: str = "") -> str:
         return call_gpt(prompt, system)
     try:
         r = claude_c.messages.create(
-            model="claude-opus-4-6", max_tokens=2000,
+            model="claude-opus-4-7", max_tokens=4000,   # 2026-04-16 최신
             system=system or "당신은 전문 리서치 분석가입니다.",
             messages=[{"role": "user", "content": prompt}]
         )
@@ -329,9 +329,9 @@ def call_gemini(prompt: str) -> str:
         return call_gpt(prompt)
     try:
         r = gemini_ai.chat.completions.create(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",   # thinking 내장, 2026 최신 stable
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000
+            max_tokens=4000
         )
         return r.choices[0].message.content.strip()
     except Exception:

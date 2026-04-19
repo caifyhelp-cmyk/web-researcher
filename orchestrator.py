@@ -16,32 +16,32 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orchestrator.db")
 
 # 캐시 버전 — 기본값이 바뀔 때 올리면 DB 강제 업데이트
-_CACHE_VERSION = 3
+_CACHE_VERSION = 4
 
 # 카테고리별 설명 (Meta LLM 프롬프트용)
 CATEGORY_DESC = {
     "query_generation": "검색어/쿼리 생성 및 리서치 계획 수립. 주제를 분석해 효과적인 검색어 5개와 추출 항목을 생성하는 작업.",
     "url_filtering":    "URL 관련성 판단 및 필터링. 검색 결과 URL 목록에서 주제와 무관한 것을 골라내는 작업.",
     "data_extraction":  "웹페이지 본문에서 정해진 항목(업체명, 가격, 서비스 등)을 JSON으로 구조화 추출하는 작업.",
-    "market_analysis":  "수집된 다수 사이트 정보를 종합해 시장 현황, 경쟁 구도, 트렌드를 분석하는 작업.",
-    "strategy_insight": "시장 분석 결과를 바탕으로 마케팅 전략과 실행 가능한 액션 아이템을 도출하는 작업.",
-    "document_writing": "분석 결과를 바탕으로 보고서/제안서를 작성하는 작업.",
-    "quick_qa":         "짧고 간단한 정보 조회나 단순 질문에 빠르게 답하는 작업.",
+    "market_analysis":  "수집된 다수 사이트 정보를 종합해 시장 현황, 경쟁 구도, 트렌드를 분석하는 작업. 대용량 컨텍스트 처리 필요.",
+    "strategy_insight": "시장 분석 결과를 바탕으로 마케팅 전략과 실행 가능한 액션 아이템을 도출하는 작업. 깊은 추론과 창의성 필요.",
+    "document_writing": "분석 결과를 바탕으로 보고서/제안서를 작성하는 작업. 긴 글, 구조화, 한국어 품질 중요.",
+    "quick_qa":         "짧고 간단한 정보 조회나 단순 질문에 빠르게 답하는 작업. 속도와 비용 효율 중요.",
 }
 
 # 콜드 스타트용 기본 캐시 — 첫 실행 시 DB에 시드됨
-# v3: gemini 추가, document_writing/market_analysis 재조정
+# v4: 2026-04 최신 모델 반영 (gpt-4.1, claude-opus-4-7, gemini-2.5-flash, o3, o4-mini)
 _DEFAULT_CACHE = {
-    "query_generation": {"winner": "deepseek",   "meta_score": 88, "self_score": 85},
-    "url_filtering":    {"winner": "gpt-4o",     "meta_score": 90, "self_score": 85},
-    "data_extraction":  {"winner": "gpt-4o",     "meta_score": 95, "self_score": 85},
-    "market_analysis":  {"winner": "gpt-4o",     "meta_score": 90, "self_score": 87},
-    "strategy_insight": {"winner": "claude",     "meta_score": 95, "self_score": 92},
-    "document_writing": {"winner": "claude",     "meta_score": 92, "self_score": 90},
-    "quick_qa":         {"winner": "gpt-4o-mini","meta_score": 80, "self_score": 85},
+    "query_generation": {"winner": "deepseek",  "meta_score": 88, "self_score": 85},
+    "url_filtering":    {"winner": "gpt-4.1",   "meta_score": 92, "self_score": 88},
+    "data_extraction":  {"winner": "gpt-4.1",   "meta_score": 95, "self_score": 90},
+    "market_analysis":  {"winner": "gemini",    "meta_score": 91, "self_score": 89},
+    "strategy_insight": {"winner": "claude",    "meta_score": 96, "self_score": 94},
+    "document_writing": {"winner": "claude",    "meta_score": 94, "self_score": 92},
+    "quick_qa":         {"winner": "o4-mini",   "meta_score": 85, "self_score": 88},
 }
 
-ALL_MODELS = ["claude", "gpt-4o", "gpt-4o-mini", "deepseek", "gemini"]
+ALL_MODELS = ["claude", "gpt-4.1", "gpt-4.1-mini", "deepseek", "gemini", "o3", "o4-mini"]
 
 
 # ══════════════════════════════════════════════

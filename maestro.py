@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "1.7.2"
+VERSION = "2.0.0"
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -585,7 +585,7 @@ def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
             return "[DeepSeek API 키 없음]"
         try:
             r = deepseek.chat.completions.create(
-                model="deepseek-reasoner",
+                model="deepseek-reasoner",   # 내부: DeepSeek-R2 (API명 동일)
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=3000
             )
@@ -598,7 +598,7 @@ def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
             return "[Claude API 키 없음]"
         try:
             r = ant.messages.create(
-                model="claude-opus-4-6", max_tokens=3000,
+                model="claude-opus-4-7", max_tokens=4000,   # 2026-04-16 최신
                 system="당신은 최고 수준의 분석가이자 전략가입니다. 모든 응답은 한국어로.",
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -624,26 +624,56 @@ def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
             return "[Gemini API 키 없음]"
         try:
             r = gemini_ai.chat.completions.create(
-                model="gemini-2.0-flash",
+                model="gemini-2.5-flash",   # thinking 내장, 2026 최신 stable
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=3000
+                max_tokens=4000
             )
             return r.choices[0].message.content.strip()
         except Exception as e:
             return f"[Gemini 오류: {e}]"
 
-    elif model == "gpt-4o":
+    elif model in ("gpt-4o", "gpt-4.1"):
         if not oai:
             return "[OpenAI API 키 없음]"
         try:
             r = oai.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4.1",   # 2026-04 최신, 1M context, 더 나은 instruction following
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=4000,
+                temperature=0.4
+            )
+            return r.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[GPT-4.1 오류: {e}]"
+
+    elif model == "o3":
+        # OpenAI 최상위 추론 모델 — 수학·논리·복잡한 단계적 분석
+        if not oai:
+            return "[OpenAI API 키 없음]"
+        try:
+            r = oai.chat.completions.create(
+                model="o3",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5000
+                # o-series는 temperature 미지원
+            )
+            return r.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[o3 오류: {e}]"
+
+    elif model == "o4-mini":
+        # 빠르고 저렴한 추론 — 간단 분석·QA에 최적
+        if not oai:
+            return "[OpenAI API 키 없음]"
+        try:
+            r = oai.chat.completions.create(
+                model="o4-mini",
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=3000
             )
             return r.choices[0].message.content.strip()
         except Exception as e:
-            return f"[GPT-4o 오류: {e}]"
+            return f"[o4-mini 오류: {e}]"
 
     return f"[알 수 없는 모델: {model}]"
 
@@ -1528,17 +1558,20 @@ _TOOL_DEFS = [
     {"type": "function", "function": {
         "name": "ask_specialist",
         "description": (
-            "특정 LLM 전문가에게 작업을 위임합니다.\n"
-            "- deepseek: 복잡한 추론, 수학, 코드 알고리즘, 단계별 분석\n"
-            "- claude: 긴 문서 분석, 세밀한 글쓰기, 보고서/제안서, 전략 인사이트\n"
-            "- grok: 실시간/최신 정보, 뉴스, 트렌드, 2024-2025년 이슈\n"
-            "- gemini: 멀티모달 분석, 대용량 컨텍스트, 문서 요약\n"
-            "- gpt-4o: 구조화 출력, 데이터 추출, 일반 코딩\n"
-            "- auto: 오케스트레이터가 category 기준으로 최적 모델 자동 선택 (category 필수)"
+            "특정 LLM 전문가에게 작업을 위임합니다. 2026년 4월 최신 모델 기준.\n"
+            "- o3      : 최상위 추론. 수학·논리·복잡한 단계별 분석 (가장 강력, 느림)\n"
+            "- claude  : claude-opus-4-7. 긴 문서·보고서·전략 인사이트·세밀한 글쓰기\n"
+            "- gemini  : gemini-2.5-flash (thinking 내장). 멀티모달·대용량 컨텍스트·문서 요약\n"
+            "- gpt-4.1 : 구조화 출력·데이터 추출·코딩·instruction 정밀 수행\n"
+            "- deepseek: 복잡한 추론·알고리즘·코드 분석 (저비용 추론)\n"
+            "- grok    : 실시간/최신 정보, 뉴스, 트렌드, X(Twitter) 데이터\n"
+            "- o4-mini : 빠른 추론·간단 분석·QA (저비용)\n"
+            "- auto    : 오케스트레이터가 category 기준으로 최적 모델 자동 선택"
         ),
         "parameters": {"type": "object", "properties": {
             "model":    {"type": "string",
-                         "enum": ["deepseek", "claude", "grok", "gemini", "gpt-4o", "auto"]},
+                         "enum": ["o3", "claude", "gemini", "gpt-4.1", "deepseek",
+                                  "grok", "o4-mini", "auto"]},
             "prompt":   {"type": "string"},
             "category": {"type": "string",
                          "description": "model=auto일 때 필수. query_generation / url_filtering / data_extraction / market_analysis / strategy_insight / document_writing / quick_qa 중 하나",
@@ -1796,11 +1829,15 @@ web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로
 
 **코딩/파일 작업** → ask_claude_code 최우선. 직접 write_file/edit_file은 짧은 수정에만.
 
-**최신 뉴스/실시간 정보** → "최근", "요즘", "2025년", "지금" 키워드 → ask_specialist(model="grok", ...) 우선.
+**최신 뉴스/실시간 정보** → "최근", "요즘", "2026년", "지금" 키워드 → ask_specialist(model="grok", ...) 우선.
 
-**복잡한 추론/단계별 계산** → ask_specialist(model="deepseek", ...).
+**복잡한 추론/수학/논리** → ask_specialist(model="o3", ...). 단순 분석은 ask_specialist(model="o4-mini", ...).
 
-**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing").
+**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing"). (claude-opus-4-7 사용)
+
+**대용량 컨텍스트/멀티모달/문서 요약** → ask_specialist(model="gemini", ...). (gemini-2.5-flash thinking 내장)
+
+**데이터 추출/구조화 출력/코딩** → ask_specialist(model="gpt-4.1", ...).
 
 **모델 선택이 불확실할 때** → ask_specialist(model="auto", category="[해당 카테고리]").
 
@@ -1859,7 +1896,7 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
 
         try:
             response = oai.chat.completions.create(
-                model="gpt-4o",
+                model="gpt-4.1",
                 messages=messages,
                 tools=_TOOL_DEFS,
                 tool_choice="auto",
@@ -2036,11 +2073,11 @@ def main():
 
     # 연결된 모델 확인
     models = []
-    if oai:       models.append("GPT-4o")
-    if ant:       models.append("Claude")
-    if deepseek:  models.append("DeepSeek")
-    if grok_ai:   models.append("Grok")
-    if gemini_ai: models.append("Gemini")
+    if oai:       models.append("GPT-4.1 / o3 / o4-mini")
+    if ant:       models.append("Claude Opus 4.7")
+    if deepseek:  models.append("DeepSeek-R2")
+    if grok_ai:   models.append("Grok-3")
+    if gemini_ai: models.append("Gemini-2.5-Flash")
 
     # 뇌 에이전트 핑 (콜드 스타트 워밍업 포함)
     brain_ok = False
