@@ -103,11 +103,14 @@ OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEEPSEEK_KEY  = os.getenv("DEEPSEEK_API_KEY", "")
 GROK_KEY      = os.getenv("GROK_API_KEY", "")
+GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
 
-oai      = OpenAI(api_key=OPENAI_KEY)                                         if OPENAI_KEY    else None
-claude_c = Anthropic(api_key=ANTHROPIC_KEY)                                   if ANTHROPIC_KEY else None
-deepseek = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_KEY  else None
-grok_ai  = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")      if GROK_KEY      else None
+oai       = OpenAI(api_key=OPENAI_KEY)                                          if OPENAI_KEY    else None
+claude_c  = Anthropic(api_key=ANTHROPIC_KEY)                                    if ANTHROPIC_KEY else None
+deepseek  = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")  if DEEPSEEK_KEY  else None
+grok_ai   = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")       if GROK_KEY      else None
+gemini_ai = OpenAI(api_key=GEMINI_KEY,
+                   base_url="https://generativelanguage.googleapis.com/v1beta/openai/") if GEMINI_KEY else None
 
 console  = Console(highlight=False)
 
@@ -288,6 +291,8 @@ def call_model(category: str, prompt: str, system: str = "",
                         temperature=temperature, max_tokens=max_tokens)
     elif model == "deepseek":
         return call_deepseek(prompt)
+    elif model == "gemini":
+        return call_gemini(prompt)
     else:
         return call_gpt(prompt, system, model="gpt-4o-mini",
                         temperature=temperature, max_tokens=max_tokens)
@@ -311,6 +316,20 @@ def call_deepseek(prompt: str) -> str:
     try:
         r = deepseek.chat.completions.create(
             model="deepseek-reasoner",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000
+        )
+        return r.choices[0].message.content.strip()
+    except Exception:
+        return call_gpt(prompt)
+
+
+def call_gemini(prompt: str) -> str:
+    if not gemini_ai:
+        return call_gpt(prompt)
+    try:
+        r = gemini_ai.chat.completions.create(
+            model="gemini-2.0-flash",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000
         )

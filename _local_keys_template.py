@@ -13,6 +13,7 @@ _KEYS = {
     "ANTHROPIC_API_KEY":   "",   # https://console.anthropic.com/
     "DEEPSEEK_API_KEY":    "",   # https://platform.deepseek.com/
     "GROK_API_KEY":        "",   # https://console.x.ai/
+    "GEMINI_API_KEY":      "",   # https://aistudio.google.com/apikey
     "GITHUB_DATA_TOKEN":   "",   # https://github.com/settings/tokens (repo 권한)
     "NAVER_CLIENT_ID":     "",   # https://developers.naver.com/ (검색 API)
     "NAVER_CLIENT_SECRET": "",

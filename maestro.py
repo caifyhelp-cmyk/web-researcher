@@ -42,15 +42,18 @@ OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DEEPSEEK_KEY  = os.getenv("DEEPSEEK_API_KEY", "")
 GROK_KEY      = os.getenv("GROK_API_KEY", "")
+GEMINI_KEY    = os.getenv("GEMINI_API_KEY", "")
 VERCEL_TOKEN  = os.getenv("VERCEL_TOKEN", "")
 
 from openai    import OpenAI
 from anthropic import Anthropic
 
-oai      = OpenAI(api_key=OPENAI_KEY)                                         if OPENAI_KEY    else None
-ant      = Anthropic(api_key=ANTHROPIC_KEY)                                   if ANTHROPIC_KEY else None
-deepseek = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com") if DEEPSEEK_KEY  else None
-grok_ai  = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")      if GROK_KEY      else None
+oai       = OpenAI(api_key=OPENAI_KEY)                                          if OPENAI_KEY    else None
+ant       = Anthropic(api_key=ANTHROPIC_KEY)                                    if ANTHROPIC_KEY else None
+deepseek  = OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com")  if DEEPSEEK_KEY  else None
+grok_ai   = OpenAI(api_key=GROK_KEY,     base_url="https://api.x.ai/v1")       if GROK_KEY      else None
+gemini_ai = OpenAI(api_key=GEMINI_KEY,
+                   base_url="https://generativelanguage.googleapis.com/v1beta/openai/") if GEMINI_KEY else None
 
 # ── 자동 업데이트 ────────────────────────────────────────────────
 _GITHUB_RAW = "https://raw.githubusercontent.com/caifyhelp-cmyk/web-researcher/master"
@@ -152,7 +155,7 @@ import sqlite3
 
 _CACHE_DB_PATH = Path(os.path.expanduser("~")) / ".maestro" / "response_cache.db"
 _CACHE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-_CACHE_HIT_THRESHOLD  = 0.95   # 이 이상: 캐시를 참고로 주입 (GPT-4o가 검증 후 활용)
+_CACHE_HIT_THRESHOLD  = 0.97   # 이 이상: 캐시를 참고로 주입 (GPT-4o가 검증 후 활용)
 _CACHE_TTL_DAYS       = 14     # 캐시 유효 기간 (2주)
 
 def _cache_init():
@@ -484,21 +487,35 @@ def _tool_web_search(query: str, num_results: int = 5) -> str:
 
 def _tool_web_fetch(url: str) -> str:
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            html = r.read().decode("utf-8", errors="replace")
-        # 태그 제거
-        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL)
-        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
-        text = re.sub(r'<[^>]+>', ' ', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text[:5000]
+        import requests as _req
+        from bs4 import BeautifulSoup as _BS
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        }
+        resp = _req.get(url, headers=headers, timeout=10, allow_redirects=True)
+        resp.raise_for_status()
+        soup = _BS(resp.content, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+        text = " ".join(soup.get_text(separator=" ").split())
+        return text[:5000] if text else "[페이지 내용 없음]"
     except Exception as e:
         return f"[fetch 오류: {e}]"
 
 
-def _tool_ask_specialist(model: str, prompt: str) -> str:
-    """전문 LLM에게 위임"""
+def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
+    """전문 LLM에게 위임. model="auto"이면 오케스트레이터가 최적 모델 선택."""
+
+    # ── auto: 오케스트레이터 동적 선택 ──────────────────────────────
+    if model == "auto":
+        if _ORCH and category:
+            if orch.check_reevaluation_needed(category):
+                pass  # 백그라운드 재평가는 main loop에서 처리
+            model = orch.get_best_model(category)
+        else:
+            model = "gpt-4o"
+
     if model == "deepseek":
         if not deepseek:
             return "[DeepSeek API 키 없음]"
@@ -518,7 +535,7 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
         try:
             r = ant.messages.create(
                 model="claude-opus-4-6", max_tokens=3000,
-                system="당신은 최고 수준의 분석가이자 전략가입니다.",
+                system="당신은 최고 수준의 분석가이자 전략가입니다. 모든 응답은 한국어로.",
                 messages=[{"role": "user", "content": prompt}]
             )
             return r.content[0].text.strip()
@@ -537,6 +554,19 @@ def _tool_ask_specialist(model: str, prompt: str) -> str:
             return r.choices[0].message.content.strip()
         except Exception as e:
             return f"[Grok 오류: {e}]"
+
+    elif model == "gemini":
+        if not gemini_ai:
+            return "[Gemini API 키 없음]"
+        try:
+            r = gemini_ai.chat.completions.create(
+                model="gemini-2.0-flash",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=3000
+            )
+            return r.choices[0].message.content.strip()
+        except Exception as e:
+            return f"[Gemini 오류: {e}]"
 
     elif model == "gpt-4o":
         if not oai:
@@ -1298,7 +1328,8 @@ def _exec_tool(name: str, args: dict) -> str:
         "web_fetch":        lambda: _tool_web_fetch(**args),
         "ask_brain":        lambda: _call_brain(args.get("situation", "")),
         "ask_specialist":   lambda: _tool_ask_specialist(
-                                args.get("model", "gpt-4o"), args.get("prompt", "")),
+                                args.get("model", "gpt-4o"), args.get("prompt", ""),
+                                args.get("category", "")),
         "ask_claude_code":  lambda: _tool_ask_claude_code(
                                 args.get("prompt", ""),
                                 args.get("cwd", "."),
@@ -1435,13 +1466,20 @@ _TOOL_DEFS = [
         "description": (
             "특정 LLM 전문가에게 작업을 위임합니다.\n"
             "- deepseek: 복잡한 추론, 수학, 코드 알고리즘, 단계별 분석\n"
-            "- claude: 긴 문서 분석, 세밀한 글쓰기, 미묘한 뉘앙스 판단\n"
-            "- grok: 실시간/최신 정보, 트렌드, 뉴스\n"
-            "- gpt-4o: 구조화 출력, 일반 코딩"
+            "- claude: 긴 문서 분석, 세밀한 글쓰기, 보고서/제안서, 전략 인사이트\n"
+            "- grok: 실시간/최신 정보, 뉴스, 트렌드, 2024-2025년 이슈\n"
+            "- gemini: 멀티모달 분석, 대용량 컨텍스트, 문서 요약\n"
+            "- gpt-4o: 구조화 출력, 데이터 추출, 일반 코딩\n"
+            "- auto: 오케스트레이터가 category 기준으로 최적 모델 자동 선택 (category 필수)"
         ),
         "parameters": {"type": "object", "properties": {
-            "model":  {"type": "string", "enum": ["deepseek", "claude", "grok", "gpt-4o"]},
-            "prompt": {"type": "string"}
+            "model":    {"type": "string",
+                         "enum": ["deepseek", "claude", "grok", "gemini", "gpt-4o", "auto"]},
+            "prompt":   {"type": "string"},
+            "category": {"type": "string",
+                         "description": "model=auto일 때 필수. query_generation / url_filtering / data_extraction / market_analysis / strategy_insight / document_writing / quick_qa 중 하나",
+                         "enum": ["query_generation", "url_filtering", "data_extraction",
+                                  "market_analysis", "strategy_insight", "document_writing", "quick_qa"]}
         }, "required": ["model", "prompt"]}
     }},
     {"type": "function", "function": {
@@ -1684,6 +1722,31 @@ Excel, PDF, PPT 중 원하는 형식으로. "다 해줘"하면 세 가지 모두
 
 ---
 
+## 도구 라우팅 규칙 (반드시 준수)
+
+**리서치/시장조사/경쟁사 분석** → "조사", "분석", "비교", "경쟁사", "업체 목록", "시장 현황" 키워드 감지 시
+web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로 저장할까요?" 반드시 물어볼 것.
+
+**전략/마케팅 판단** → ask_brain 먼저 호출 → 이어서 ask_specialist(model="claude", ...) 로 전략 보고서 작성.
+두 결과를 합쳐서 사용자에게 전달.
+
+**코딩/파일 작업** → ask_claude_code 최우선. 직접 write_file/edit_file은 짧은 수정에만.
+
+**최신 뉴스/실시간 정보** → "최근", "요즘", "2025년", "지금" 키워드 → ask_specialist(model="grok", ...) 우선.
+
+**복잡한 추론/단계별 계산** → ask_specialist(model="deepseek", ...).
+
+**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing").
+
+**모델 선택이 불확실할 때** → ask_specialist(model="auto", category="[해당 카테고리]").
+
+**도구 실패 시 필수 행동** → 실패 사실을 사용자에게 반드시 명시. "도구가 실패해 학습 데이터로 답했습니다"라고 밝힐 것. 오류를 숨기고 아는 척 금지.
+
+**응답 구체성 원칙**
+- 숫자가 있으면 숫자로. "상당히", "많이" 대신 구체적 수치/이름/URL 포함.
+- 전문가 분석은 bullet 3개 이상, 각 항목에 근거 포함.
+- 리서치 결과는 업체명/가격/특징 테이블 형태로 정리.
+
 ## 응답 방식
 - 반드시 한국어로만. 영어 절대 금지.
 - 전문가 결과가 영어로 와도 번역해서 전달합니다.
@@ -1704,24 +1767,24 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     if not oai:
         return "[OpenAI API 키가 없어 MAESTRO를 실행할 수 없습니다]"
 
-    # ── 응답 캐시: 유사 답변을 참고로 주입 (bypass 아님) ─────────────
-    cache_hint = ""
-    if not history:   # 첫 턴에만 (문맥 없을 때)
-        cached_resp, sim = _cache_lookup(user_input)
-        if cached_resp:
-            cache_hint = (
-                f"\n\n[참고: 이전에 유사한 질문(유사도 {sim:.0%})에 아래와 같이 답한 적이 있습니다. "
-                f"현재 질문에 정확히 맞으면 참고하고, 다르거나 정보가 업데이트됐으면 수정해서 답하세요.]\n"
-                f"{cached_resp[:800]}"
-            )
-            console.print(f"  [dim][CACHE] 유사 답변 참고 주입 (유사도 {sim:.0%})[/dim]")
-
-    messages = [{"role": "system", "content": _build_system_prompt() + cache_hint}]
+    messages = [{"role": "system", "content": _build_system_prompt()}]
     messages += history[-40:]   # 로컬엔 전체 보존, GPT-4o엔 최근 20턴(40개 메시지)
+
     # 영어 입력이어도 한국어 응답 강제
     content = user_input
     if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
         content = user_input + "\n(반드시 한국어로 답변)"
+
+    # ── 응답 캐시: 유사도 97% 이상만, user 메시지 끝에 참고로 첨부 ──
+    if not history:   # 첫 턴에만 (문맥 없을 때)
+        cached_resp, sim = _cache_lookup(user_input)
+        if cached_resp:
+            content += (
+                f"\n\n[이전 유사 질문(유사도 {sim:.0%}) 참고 — 현재 질문과 다르거나 정보가 업데이트됐으면 무시하세요]\n"
+                f"{cached_resp[:600]}"
+            )
+            console.print(f"  [dim][CACHE] 유사 답변 참고 첨부 (유사도 {sim:.0%})[/dim]")
+
     messages.append({"role": "user", "content": content})
 
     max_iterations = 20
@@ -1839,7 +1902,9 @@ def _show_tool_call(name: str, args: dict):
         console.print(f"  {icon} [dim]뇌 에이전트 판단 중...[/dim]")
     elif name == "ask_specialist":
         model = args.get("model", "")
-        console.print(f"  {icon} [dim]{model} 전문가에게 위임 중...[/dim]")
+        cat   = args.get("category", "")
+        label = f"{model}({cat})" if model == "auto" and cat else model
+        console.print(f"  {icon} [dim]{label} 전문가에게 위임 중...[/dim]")
     elif name == "ask_claude_code":
         cwd = args.get("cwd", ".")
         preview = args.get("prompt", "")[:60]
@@ -1907,10 +1972,11 @@ def main():
 
     # 연결된 모델 확인
     models = []
-    if oai:      models.append("GPT-4o")
-    if ant:      models.append("Claude")
-    if deepseek: models.append("DeepSeek")
-    if grok_ai:  models.append("Grok")
+    if oai:       models.append("GPT-4o")
+    if ant:       models.append("Claude")
+    if deepseek:  models.append("DeepSeek")
+    if grok_ai:   models.append("Grok")
+    if gemini_ai: models.append("Gemini")
 
     # 뇌 에이전트 핑 (콜드 스타트 워밍업 포함)
     brain_ok = False

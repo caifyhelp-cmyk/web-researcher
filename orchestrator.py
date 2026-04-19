@@ -16,7 +16,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(_HERE, "orchestrator.db")
 
 # 캐시 버전 — 기본값이 바뀔 때 올리면 DB 강제 업데이트
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 
 # 카테고리별 설명 (Meta LLM 프롬프트용)
 CATEGORY_DESC = {
@@ -30,18 +30,18 @@ CATEGORY_DESC = {
 }
 
 # 콜드 스타트용 기본 캐시 — 첫 실행 시 DB에 시드됨
-# v2: data_extraction, url_filtering → gpt-4o (실제 평가 결과 반영)
+# v3: gemini 추가, document_writing/market_analysis 재조정
 _DEFAULT_CACHE = {
-    "query_generation": {"winner": "deepseek",  "meta_score": 88, "self_score": 85},
-    "url_filtering":    {"winner": "gpt-4o",    "meta_score": 90, "self_score": 85},
-    "data_extraction":  {"winner": "gpt-4o",    "meta_score": 95, "self_score": 85},
-    "market_analysis":  {"winner": "gpt-4o",    "meta_score": 90, "self_score": 87},
-    "strategy_insight": {"winner": "claude",    "meta_score": 95, "self_score": 92},
-    "document_writing": {"winner": "claude",    "meta_score": 92, "self_score": 90},
+    "query_generation": {"winner": "deepseek",   "meta_score": 88, "self_score": 85},
+    "url_filtering":    {"winner": "gpt-4o",     "meta_score": 90, "self_score": 85},
+    "data_extraction":  {"winner": "gpt-4o",     "meta_score": 95, "self_score": 85},
+    "market_analysis":  {"winner": "gpt-4o",     "meta_score": 90, "self_score": 87},
+    "strategy_insight": {"winner": "claude",     "meta_score": 95, "self_score": 92},
+    "document_writing": {"winner": "claude",     "meta_score": 92, "self_score": 90},
     "quick_qa":         {"winner": "gpt-4o-mini","meta_score": 80, "self_score": 85},
 }
 
-ALL_MODELS = ["claude", "gpt-4o", "gpt-4o-mini", "deepseek"]
+ALL_MODELS = ["claude", "gpt-4o", "gpt-4o-mini", "deepseek", "gemini"]
 
 
 # ══════════════════════════════════════════════
