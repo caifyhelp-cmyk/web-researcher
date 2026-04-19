@@ -45,6 +45,42 @@ from rich.prompt import Prompt, Confirm
 from rich.rule import Rule
 from rich.live import Live
 from rich.spinner import Spinner
+
+try:
+    import questionary
+    from questionary import Style as QStyle
+    _Q_STYLE = QStyle([
+        ("qmark",        "fg:#00cfff bold"),
+        ("question",     "bold"),
+        ("selected",     "fg:#00cfff bold"),
+        ("pointer",      "fg:#00cfff bold"),
+        ("highlighted",  "fg:#00cfff bold"),
+        ("answer",       "fg:#00cfff bold"),
+    ])
+    _HAS_Q = True
+except ImportError:
+    _HAS_Q = False
+
+
+def _select(message: str, choices: list, default: str = None) -> str:
+    """방향키 선택 (questionary 없으면 텍스트 폴백)"""
+    if _HAS_Q:
+        choice_values = [c if isinstance(c, str) else c["value"] for c in choices]
+        choice_names  = [c if isinstance(c, str) else c["name"]  for c in choices]
+        display = [{"name": n, "value": v} for n, v in zip(choice_names, choice_values)]
+        result = questionary.select(message, choices=display, default=default, style=_Q_STYLE).ask()
+        return result if result is not None else (default or choice_values[0])
+    # 폴백: 텍스트 입력
+    opts = "/".join([c if isinstance(c, str) else c["value"] for c in choices])
+    return Prompt.ask(f"{message} ({opts})", default=default or "")
+
+
+def _confirm(message: str, default: bool = True) -> bool:
+    """방향키 예/아니오 선택"""
+    if _HAS_Q:
+        result = questionary.confirm(message, default=default, style=_Q_STYLE).ask()
+        return result if result is not None else default
+    return Confirm.ask(message, default=default)
 from rich.text import Text
 
 console = Console(highlight=False)
@@ -1719,13 +1755,8 @@ def _vibe_coding_session(initial_request: str, history: list) -> str:
         border_style="yellow", padding=(1, 2)
     ))
 
-    try:
-        confirm = Prompt.ask("[bold magenta]진행할까요?[/bold magenta] (Enter=yes / n=취소)", default="y").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        confirm = "n"
-
-    if confirm == "n":
-        return "알겠어요, 언제든 다시 말씀해주세요!"
+    if not _confirm("진행할까요?", default=True):
+        return "알겠어요! 언제든 다시 말씀해주세요."
 
     # 3단계: 코드 생성
     code_prompt = f"""요청: {initial_request}
@@ -2639,14 +2670,11 @@ def main():
     ))
 
     # ── 모드 선택 ────────────────────────────────────────────────
-    console.print("\n[bold]모드를 선택하세요:[/bold]")
-    console.print("  [cyan]1[/cyan]  일반 대화 모드  — 리서치, 분석, 문서 작업 등")
-    console.print("  [cyan]2[/cyan]  바이브코딩 모드 — 아이디어만 말하면 프로그램을 만들어드려요\n")
-    try:
-        mode_choice = Prompt.ask("  선택", choices=["1", "2"], default="1").strip()
-    except (KeyboardInterrupt, EOFError):
-        mode_choice = "1"
-    _vibe_mode = (mode_choice == "2")
+    mode_choice = _select("모드를 선택하세요", choices=[
+        {"name": "💬  일반 대화 모드  — 리서치, 분석, 문서 작업 등", "value": "normal"},
+        {"name": "⚡  바이브코딩 모드 — 아이디어만 말하면 프로그램을 만들어드려요", "value": "vibe"},
+    ], default="normal")
+    _vibe_mode = (mode_choice == "vibe")
     if _vibe_mode:
         console.print("[bold cyan]바이브코딩 모드[/bold cyan]로 시작합니다. 만들고 싶은 걸 말씀해주세요!\n")
     else:
@@ -2678,10 +2706,11 @@ def main():
         last = sessions[0]
         console.print(f"[dim]마지막 대화: {last['last_active']}  {last['turn_count']}턴  \"{last['first_message']}\"[/dim]")
         try:
-            choice = Prompt.ask(
-                "  [dim]이어서 대화(Enter) / 새 대화(n) / 목록(l)[/dim]",
-                default="y"
-            ).strip().lower()
+            choice = _select(f"마지막 대화: \"{last['first_message'][:30]}\"", choices=[
+                {"name": "↩  이어서 대화",   "value": "y"},
+                {"name": "✨  새 대화 시작",   "value": "n"},
+                {"name": "📋  전체 목록 보기", "value": "l"},
+            ], default="y")
         except Exception:
             choice = "y"
 
@@ -2759,11 +2788,7 @@ def main():
                 "[dim]맞다면 바이브코딩 모드로 진입해서 바로 만들어드릴게요.[/dim]",
                 border_style="cyan", padding=(1, 2)
             ))
-            try:
-                vibe_confirm = Prompt.ask("  [dim]바이브코딩 모드로 진입할까요?[/dim]", choices=["y", "n"], default="y").strip()
-            except (KeyboardInterrupt, EOFError):
-                vibe_confirm = "n"
-            if vibe_confirm == "y":
+            if _confirm("바이브코딩 모드로 진입할까요?", default=True):
                 _vibe_mode = True
 
         if _vibe_mode and _detect_vibe_need(user_input):
