@@ -18,7 +18,24 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+
+# ── 개인 맞춤화 엔진 ─────────────────────────────────────────────
+try:
+    import personalizer as _pers
+    _custom = _pers.load_custom()
+    _PERS_OK = True
+except Exception:
+    _pers = None
+    _custom = {}
+    _PERS_OK = False
+
+# ── 자동 업데이터 ────────────────────────────────────────────────
+try:
+    import updater as _upd
+    _upd.check_update_background()   # 백그라운드에서 조용히 확인
+except Exception:
+    _upd = None
 
 # ── Rich UI ──────────────────────────────────────────────────────
 from rich.console import Console
@@ -146,6 +163,30 @@ def _load_tools_kb() -> list:
 
 # 마지막 리서치 결과 캐시 (save_research 도구에서 재사용)
 _last_research: dict = {}
+
+
+def _detect_and_save_preference(utterance: str):
+    """
+    사용자 발언에서 선호 감지 → custom.json 저장 → 변경사항 알림.
+    빠른 정규식 감지 우선, 선호 감지되면 GPT 정밀 분석 추가.
+    """
+    global _custom
+    if not _PERS_OK:
+        return
+
+    # 1차: 정규식 빠른 감지
+    fast = _pers.detect_preference_fast(utterance)
+    if not fast:
+        return   # 선호 없으면 API 호출 안 함 (비용 절감)
+
+    # 2차: GPT-4.1-mini 정밀 분석
+    gpt_result = _pers.detect_preference_gpt(utterance, oai)
+    merged = {**fast, **gpt_result}
+
+    _custom, changed = _pers.apply_preference_updates(_custom, merged)
+    if changed:
+        _pers.save_custom(_custom)
+        console.print(f"  [dim][맞춤화] {' | '.join(changed)} 저장됨[/dim]")
 
 # ── Selenium 싱글턴 드라이버 ──────────────────────────────────────
 _selenium_driver = None
@@ -661,14 +702,20 @@ def _tool_web_fetch(url: str) -> str:
 def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
     """전문 LLM에게 위임. model="auto"이면 오케스트레이터가 최적 모델 선택."""
 
-    # ── auto: 오케스트레이터 동적 선택 ──────────────────────────────
+    # ── auto: 사용자 오버라이드 → 오케스트레이터 DB 순서로 선택 ──────
     if model == "auto":
-        if _ORCH and category:
+        # 1순위: 사용자가 직접 지정한 모델 선호
+        user_override = (_pers.get_model_override(_custom, category)
+                         if _PERS_OK and category else None)
+        if user_override:
+            model = user_override
+        # 2순위: 오케스트레이터 DB (웹 리서치 기반 최강 모델)
+        elif _ORCH and category:
             if orch.check_reevaluation_needed(category):
                 pass  # 백그라운드 재평가는 main loop에서 처리
             model = orch.get_best_model(category)
         else:
-            model = "gpt-4o"
+            model = "gpt-4.1"
 
     if model == "deepseek":
         if not deepseek:
@@ -1804,14 +1851,24 @@ _TOOL_DEFS = [
 # ═══════════════════════════════════════════════════════════════
 
 def _build_system_prompt() -> str:
-    """집단지성 패턴을 포함한 시스템 프롬프트 동적 생성"""
+    """집단지성 패턴 + 개인 맞춤화 레이어를 포함한 시스템 프롬프트 동적 생성"""
+    # 1. 집단지성 (모든 사용자 공통)
     knowledge_section = ""
     if _PC:
         try:
             knowledge_section = _pc.build_knowledge_prompt()
         except Exception:
             pass
-    return _SYSTEM_BASE + knowledge_section
+
+    # 2. 개인 맞춤화 (이 사용자만의 레이어)
+    personal_section = ""
+    if _PERS_OK and _custom:
+        try:
+            personal_section = _pers.build_personalized_prompt(_custom)
+        except Exception:
+            pass
+
+    return _SYSTEM_BASE + knowledge_section + personal_section
 
 
 _SYSTEM_BASE = """[절대 규칙] 모든 응답은 반드시 한국어로만 작성합니다. 영어 금지. 전문 용어도 한국어로 설명합니다.
@@ -2056,10 +2113,14 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
         if not msg.tool_calls:
             final = msg.content or ""
             # 첫 턴 + 도구 미사용 응답만 캐시 저장
-            # (웹 검색/파일/리서치 결과는 캐시 안 함 — 항상 최신 데이터 필요)
             if iteration == 1 and not history and final and len(final) > 50:
                 import threading as _t
                 _t.Thread(target=_cache_store, args=(user_input, final), daemon=True).start()
+
+            # ── 실시간 선호 감지 → custom.json 업데이트 ──────────────
+            if _PERS_OK:
+                _detect_and_save_preference(user_input)
+
             return final
 
         # 도구 호출 처리
@@ -2252,12 +2313,28 @@ def main():
     brain_str = "[green]연동됨[/green]" if brain_ok else "[red]미연동[/red]"
     orch_str  = "[green]활성[/green]"   if _ORCH     else "[red]비활성[/red]"
 
+    # 개인화 상태
+    pers_str = "[dim]없음[/dim]"
+    if _PERS_OK and _custom:
+        domains = _custom.get("domain_expertise", [])
+        extras  = len(_custom.get("system_prompt_extras", []))
+        overrides = len(_custom.get("model_overrides", {}))
+        pers_str = f"[green]적용됨[/green] (도메인:{len(domains)} 규칙:{extras} 오버라이드:{overrides})"
+
+    # 업데이트 알림
+    update_notice = ""
+    if _upd and _upd._PENDING_UPDATE.get("available"):
+        commit = _upd._PENDING_UPDATE.get("commit", "")
+        update_notice = f"\n  [yellow]새 업데이트 있음 (커밋: {commit}) — 'python updater.py' 로 적용[/yellow]"
+
     console.print(Panel(
         f"[bold cyan]MAESTRO[/bold cyan]  v{VERSION}\n"
-        f"[dim]현존 최강 AI 오케스트레이터[/dim]\n\n"
-        f"  LLM    : {' / '.join(models) if models else '[red]없음[/red]'}\n"
+        f"[dim]현존 최강 개인 맞춤형 AI 오케스트레이터[/dim]\n\n"
+        f"  LLM        : {' / '.join(models) if models else '[red]없음[/red]'}\n"
         f"  뇌 에이전트: {brain_str}\n"
-        f"  오케스트레이터: {orch_str}",
+        f"  오케스트레이터: {orch_str}\n"
+        f"  개인 맞춤화: {pers_str}"
+        + update_notice,
         border_style="bright_magenta", padding=(1, 6)
     ))
 
