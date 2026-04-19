@@ -509,13 +509,20 @@ _selenium_driver = None
 
 def _get_driver():
     global _selenium_driver
-    if _selenium_driver is None:
+    # 드라이버가 있으면 살아있는지 먼저 확인
+    if _selenium_driver is not None:
         try:
-            from web_researcher import make_driver
-            console.print("[dim]Selenium 드라이버 초기화 중...[/dim]")
-            _selenium_driver = make_driver()
+            _ = _selenium_driver.current_url
+            return _selenium_driver
         except Exception:
-            pass
+            _selenium_driver = None   # 죽은 드라이버 초기화
+
+    try:
+        from web_researcher import make_driver
+        console.print("[dim]Selenium 드라이버 초기화 중...[/dim]")
+        _selenium_driver = make_driver()
+    except Exception:
+        pass
     return _selenium_driver
 
 def _fetch_page(url: str, timeout: int = 8) -> dict:

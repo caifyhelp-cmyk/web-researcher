@@ -147,6 +147,36 @@ def _load_tools_kb() -> list:
 # 마지막 리서치 결과 캐시 (save_research 도구에서 재사용)
 _last_research: dict = {}
 
+# ── Selenium 싱글턴 드라이버 ──────────────────────────────────────
+_selenium_driver = None
+_selenium_ok: bool | None = None   # None=미시도, True=성공, False=불가
+
+def _get_selenium_driver():
+    """
+    web_researcher.make_driver()를 재사용해 싱글턴 Selenium 드라이버 반환.
+    Chrome 없거나 selenium 미설치 시 None 반환 (requests 모드로 폴백).
+    """
+    global _selenium_driver, _selenium_ok
+    if _selenium_ok is False:
+        return None
+    if _selenium_driver is not None:
+        try:
+            _ = _selenium_driver.current_url   # 살아있는지 확인
+            return _selenium_driver
+        except Exception:
+            _selenium_driver = None
+
+    try:
+        from web_researcher import make_driver
+        _selenium_driver = make_driver()
+        _selenium_ok = _selenium_driver is not None
+        if _selenium_ok:
+            console.print("  [dim][Selenium] Chrome 드라이버 초기화 완료[/dim]")
+        return _selenium_driver
+    except Exception:
+        _selenium_ok = False
+        return None
+
 # ── 회의록 자동화 경로 ────────────────────────────────────────────
 _MEETING_AUTO_DIR = Path(os.path.expanduser("~")) / "Desktop" / "meeting_auto"
 
@@ -486,22 +516,56 @@ def _tool_web_search(query: str, num_results: int = 5) -> str:
 
 
 def _tool_web_fetch(url: str) -> str:
+    """
+    URL 페이지 본문 추출.
+    1차: requests + BeautifulSoup (빠름)
+    2차: Selenium (JS 렌더링 필요한 동적 사이트 — 텍스트 200자 미만일 때 자동 폴백)
+    """
+    import requests as _req
+    from bs4 import BeautifulSoup as _BS
+
+    _HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    }
+
+    text = ""
+    fetch_ok = False
+
+    # ── 1차: requests + BeautifulSoup ────────────────────────────
     try:
-        import requests as _req
-        from bs4 import BeautifulSoup as _BS
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
-            "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-        }
-        resp = _req.get(url, headers=headers, timeout=10, allow_redirects=True)
+        resp = _req.get(url, headers=_HEADERS, timeout=10, allow_redirects=True)
         resp.raise_for_status()
         soup = _BS(resp.content, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
         text = " ".join(soup.get_text(separator=" ").split())
-        return text[:5000] if text else "[페이지 내용 없음]"
+        fetch_ok = True
     except Exception as e:
-        return f"[fetch 오류: {e}]"
+        text = ""
+        fetch_ok = False
+
+    # ── 2차: Selenium 폴백 (JS 사이트 감지) ──────────────────────
+    # 텍스트가 200자 미만이면 JS 렌더링 필요 → Selenium 시도
+    if len(text) < 200:
+        driver = _get_selenium_driver()
+        if driver is not None:
+            try:
+                from web_researcher import scrape_page
+                console.print(f"  [dim][Selenium] JS 렌더링 시도: {url[:50]}[/dim]")
+                page = scrape_page(driver, url)
+                sel_text = page.get("full_text", "")
+                if len(sel_text) > len(text):
+                    headings = page.get("headings", "")
+                    combined = f"{headings}\n{sel_text}".strip() if headings else sel_text
+                    return combined[:5000]
+            except Exception as e:
+                console.print(f"  [dim][Selenium] 오류: {e}[/dim]")
+
+    if not fetch_ok and not text:
+        return f"[fetch 오류: 페이지를 가져올 수 없습니다]"
+
+    return text[:5000] if text else "[페이지 내용 없음]"
 
 
 def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:

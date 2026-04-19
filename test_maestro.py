@@ -264,48 +264,109 @@ def test_web_search():
 
 
 # ═══════════════════════════════════════════════════════
-#  8. Selenium / Chrome 체크
+#  8. Selenium / Chrome 체크 + web_fetch 폴백 연동 테스트
 # ═══════════════════════════════════════════════════════
 
 def test_selenium():
     print(f"\n{SEP}")
-    print("8. Selenium + Chrome (API 키 불필요 — 순수 브라우저 자동화)")
+    print("8. Selenium + Chrome + web_fetch 폴백 연동")
     print(SEP)
-    print("  ※ Selenium은 API 키 없음. Chrome 설치 + pip install selenium webdriver-manager 만 필요.")
+    print("  ※ API 키 불필요. Chrome + pip install selenium webdriver-manager 만 있으면 됩니다.")
 
+    # ── 8-1. 패키지 존재 확인 ────────────────────────────────────
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
         from selenium.webdriver.chrome.service import Service
         from webdriver_manager.chrome import ChromeDriverManager
-
-        opts = Options()
-        opts.add_argument("--headless")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--window-size=1280,800")
-
-        print("  ChromeDriver 초기화 중 (첫 실행 시 자동 다운로드)...")
-        t0 = time.time()
-        service = Service(ChromeDriverManager().install())
-        driver  = webdriver.Chrome(service=service, options=opts)
-        driver.get("https://example.com")
-        title   = driver.title
-        driver.quit()
-        elapsed = time.time() - t0
-
-        print(f"{PASS} Selenium 정상 작동 ({elapsed:.1f}s)")
-        print(f"       페이지 제목: {title}")
-        return True
+        print(f"{PASS} selenium / webdriver-manager 설치 확인")
     except ImportError as e:
-        print(f"{SKIP} selenium/webdriver_manager 미설치: {e}")
+        print(f"{FAIL} 패키지 미설치: {e}")
         print(f"       pip install selenium webdriver-manager")
         return False
+
+    # ── 8-2. Chrome 드라이버 초기화 ──────────────────────────────
+    try:
+        from web_researcher import make_driver, scrape_page
+        print("  ChromeDriver 초기화 중 (첫 실행 시 자동 다운로드)...")
+        t0 = time.time()
+        driver = make_driver()
+        elapsed = time.time() - t0
+
+        if driver is None:
+            print(f"{FAIL} Chrome 드라이버 초기화 실패 (Chrome 설치 필요)")
+            print(f"       https://www.google.com/chrome/")
+            return False
+
+        print(f"{PASS} Chrome 드라이버 초기화 성공 ({elapsed:.1f}s)")
     except Exception as e:
-        print(f"{FAIL} Selenium 오류: {e}")
-        print(f"       Chrome 설치 확인 필요 (https://www.google.com/chrome/)")
+        print(f"{FAIL} make_driver() 오류: {e}")
         return False
+
+    # ── 8-3. 정적 페이지 크롤링 ──────────────────────────────────
+    try:
+        t0 = time.time()
+        page = scrape_page(driver, "https://example.com")
+        elapsed = time.time() - t0
+        text = page.get("full_text", "")
+        if text and len(text) > 50:
+            print(f"{PASS} 정적 페이지 크롤링 (example.com) → {len(text)}자 ({elapsed:.1f}s)")
+        else:
+            print(f"{FAIL} 정적 페이지 내용 부족: {len(text)}자")
+    except Exception as e:
+        print(f"{FAIL} scrape_page() 오류: {e}")
+
+    # ── 8-4. maestro._tool_web_fetch Selenium 폴백 연동 확인 ─────
+    print()
+    print("  [web_fetch Selenium 폴백 테스트]")
+    try:
+        # JS 헤비 사이트 — requests만으론 내용 없는 대표 사례
+        JS_TEST_URLS = [
+            ("https://www.netflix.com/kr/", "JS 렌더링 사이트 (Netflix)"),
+            ("https://www.coupang.com/",    "JS 렌더링 사이트 (쿠팡)"),
+        ]
+        import requests as _req
+        from bs4 import BeautifulSoup as _BS
+
+        _HEADERS = {"User-Agent": "Mozilla/5.0 Chrome/124.0"}
+        for url, label in JS_TEST_URLS:
+            try:
+                resp = _req.get(url, headers=_HEADERS, timeout=8, allow_redirects=True)
+                soup = _BS(resp.content, "html.parser")
+                for tag in soup(["script", "style"]): tag.decompose()
+                requests_text = " ".join(soup.get_text(separator=" ").split())
+
+                page = scrape_page(driver, url)
+                selenium_text = page.get("full_text", "")
+
+                r_len = len(requests_text)
+                s_len = len(selenium_text)
+                gain  = s_len - r_len
+                emoji = "▲" if gain > 200 else "─"
+
+                print(f"  {label}")
+                print(f"    requests : {r_len:,}자")
+                print(f"    Selenium : {s_len:,}자  {emoji} 차이: {gain:+,}자")
+
+                if gain > 200:
+                    print(f"    → Selenium 폴백이 유의미한 추가 정보 수집")
+                elif r_len > 200:
+                    print(f"    → requests만으로 충분 (Selenium 폴백 불필요)")
+                else:
+                    print(f"    → 둘 다 부족 (로그인 필요 사이트)")
+            except Exception as e:
+                print(f"    {label}: 오류 — {e}")
+    except Exception as e:
+        print(f"{FAIL} 폴백 테스트 오류: {e}")
+
+    # ── 드라이버 종료 ─────────────────────────────────────────────
+    try:
+        driver.quit()
+        print(f"\n{PASS} Chrome 드라이버 정상 종료")
+    except Exception:
+        pass
+
+    return True
 
 
 # ═══════════════════════════════════════════════════════
