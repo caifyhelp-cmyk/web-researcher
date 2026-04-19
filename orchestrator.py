@@ -173,12 +173,141 @@ def get_cache_summary() -> list:
 
 
 # ══════════════════════════════════════════════
-#  자기평가 — 새 카테고리 or 재평가 필요 시
+#  웹 리서치 기반 모델 평가 (주 1회)
+# ══════════════════════════════════════════════
+
+# 카테고리 → 검색 쿼리 매핑
+_CATEGORY_SEARCH_QUERIES = {
+    "coding":          ["best LLM coding benchmark 2026", "HumanEval SWE-bench top model ranking"],
+    "document_writing":["best LLM long document writing Korean 2026", "LLM report writing benchmark"],
+    "document_export": ["best AI model structured output JSON table generation 2026"],
+    "market_analysis": ["best LLM large context analysis benchmark 2026", "LLM business analysis ranking"],
+    "strategy_insight":["best LLM strategic reasoning creativity 2026", "LLM strategy marketing ranking"],
+    "deep_reasoning":  ["best LLM math reasoning GPQA MATH benchmark 2026", "o3 vs claude reasoning"],
+    "realtime_info":   ["best LLM real time information 2026", "grok vs perplexity latest news"],
+    "query_generation":["best LLM search query generation RAG 2026"],
+    "data_extraction": ["best LLM structured data extraction JSON benchmark 2026"],
+    "quick_qa":        ["fastest cheapest LLM API 2026", "best cost efficient LLM"],
+    "url_filtering":   ["best LLM classification relevance judgment 2026"],
+}
+
+# 검색 결과를 분석해 모델 이름 추출하는 프롬프트
+_WEB_EVAL_PARSE_PROMPT = """다음은 "{category}" 작업에 대한 최신 LLM 벤치마크/리뷰 검색 결과입니다.
+
+[검색 결과]
+{search_results}
+
+위 내용을 분석해서 현재 이 작업에 가장 적합한 모델 순위를 JSON으로 반환하세요.
+대상 모델: claude (Anthropic), gemini (Google), gpt-4.1 (OpenAI), deepseek, grok (xAI), o3 (OpenAI), o4-mini (OpenAI)
+
+반드시 아래 JSON만 출력:
+{{"ranking": ["1위모델", "2위모델", "3위모델"], "reason": "한 줄 근거"}}
+
+모델명은 반드시 claude/gemini/gpt-4.1/deepseek/grok/o3/o4-mini 중 하나로만."""
+
+
+def run_web_evaluation(category: str, search_fn, analyze_fn) -> str:
+    """
+    웹 리서치 기반 모델 평가 — 주 1회 실행.
+    자기평가(편향) 대신 실제 벤치마크·커뮤니티 리뷰로 최강 모델 결정.
+
+    Args:
+        category:   평가할 카테고리 키
+        search_fn:  fn(query: str) -> str  (DDG/Naver 검색 결과 반환)
+        analyze_fn: fn(prompt: str) -> str (GPT-4.1 분석)
+
+    Returns:
+        winner 모델명
+    """
+    queries = _CATEGORY_SEARCH_QUERIES.get(category, [f"best LLM {category} 2026"])
+
+    # 검색 결과 수집
+    search_results = []
+    for q in queries[:2]:   # 쿼리 2개로 제한 (비용·속도)
+        try:
+            result = search_fn(q)
+            if result and len(result) > 50:
+                search_results.append(f"[검색: {q}]\n{result[:800]}")
+        except Exception:
+            pass
+
+    if not search_results:
+        # 검색 실패 시 기존 DB 유지
+        return get_best_model(category)
+
+    combined = "\n\n".join(search_results)
+    prompt = _WEB_EVAL_PARSE_PROMPT.format(
+        category=CATEGORY_DESC.get(category, category),
+        search_results=combined
+    )
+
+    winner = None
+    try:
+        raw = analyze_fn(prompt)
+        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+        if m:
+            data = json.loads(m.group())
+            ranking = data.get("ranking", [])
+            # ranking의 1위 중 ALL_MODELS에 있는 것 선택
+            for candidate in ranking:
+                c = candidate.lower().strip()
+                for model in ALL_MODELS:
+                    if model in c or c in model:
+                        winner = model
+                        break
+                if winner:
+                    break
+    except Exception:
+        pass
+
+    if not winner:
+        winner = get_best_model(category)  # 파싱 실패 시 기존값 유지
+
+    # DB 저장
+    try:
+        con = _get_db()
+        con.execute("""
+            INSERT OR REPLACE INTO evaluation_cache
+            (category, winner, meta_score, self_score, low_score_streak, cache_version, updated_at)
+            VALUES (?, ?, 0, 0, 0, ?, ?)
+        """, (category, winner, _CACHE_VERSION, datetime.now().isoformat()))
+        con.commit()
+        con.close()
+        print(f"[ORCH] {category} → {winner} (웹 리서치 기반)")
+    except Exception:
+        pass
+
+    return winner
+
+
+def run_web_evaluation_all(search_fn, analyze_fn) -> dict:
+    """
+    모든 카테고리를 병렬로 웹 리서치 평가.
+    Returns: {category: winner} 딕셔너리
+    """
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {
+            ex.submit(run_web_evaluation, cat, search_fn, analyze_fn): cat
+            for cat in CATEGORY_DESC
+        }
+        for fut in concurrent.futures.as_completed(futs):
+            cat = futs[fut]
+            try:
+                results[cat] = fut.result()
+            except Exception:
+                results[cat] = get_best_model(cat)
+    return results
+
+
+# ══════════════════════════════════════════════
+#  자기평가 — 하위호환 유지 (웹 평가 실패 시 폴백)
 # ══════════════════════════════════════════════
 
 def run_self_evaluation(category: str, meta_caller, self_callers: dict) -> str:
     """
-    자기평가 실행 → 최적 모델 결정 → DB 저장 → 모델명 반환.
+    [폴백 전용] 웹 리서치 실패 시만 사용.
+    모델이 자기 자신을 평가하므로 편향 있음 — 웹 평가 우선.
 
     Args:
         category:     평가할 카테고리 키

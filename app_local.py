@@ -131,9 +131,13 @@ except Exception:
 _session_models: dict = {}  # category -> model_name (이번 세션 추적용)
 
 
-# ── 백그라운드 자기평가 ───────────────────────────────────────────
+# ── 백그라운드 웹 리서치 기반 모델 평가 (주 1회) ────────────────────
 def _start_background_evaluation():
-    """앱 시작 시 7일 이상 된 카테고리를 백그라운드에서 재평가"""
+    """
+    앱 시작 시 7일 이상 된 카테고리를 백그라운드에서 재평가.
+    자기평가(편향) 대신 웹 리서치로 실제 최강 모델 결정.
+    웹 검색 실패 시 자기평가로 폴백.
+    """
     if not _ORCH_ENABLED:
         return
 
@@ -144,36 +148,51 @@ def _start_background_evaluation():
     import threading
 
     def _run():
-        # Meta caller (DeepSeek → GPT-4o fallback)
-        def meta_caller(prompt: str) -> str:
-            if deepseek:
-                try:
-                    r = deepseek.chat.completions.create(
-                        model="deepseek-chat",
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=300
-                    )
-                    return r.choices[0].message.content.strip()
-                except Exception:
-                    pass
-            return call_gpt(prompt, model="gpt-4o", max_tokens=300)
+        # ① 웹 리서치 기반 평가 (우선)
+        def _search(query: str) -> str:
+            """DDG 검색 결과 텍스트 반환"""
+            try:
+                from web_researcher import search_duckduckgo
+                results = search_duckduckgo(query, max_results=5)
+                lines = []
+                for r in results:
+                    lines.append(f"{r.get('title','')} — {r.get('body','')[:200]}")
+                return "\n".join(lines)
+            except Exception:
+                return ""
 
-        # Self-callers
-        self_callers = {}
-        if oai:
-            self_callers["gpt-4o"]      = lambda p: call_gpt(p, model="gpt-4o",      max_tokens=50)
-            self_callers["gpt-4o-mini"] = lambda p: call_gpt(p, model="gpt-4o-mini", max_tokens=50)
-        if deepseek:
-            self_callers["deepseek"] = lambda p: call_deepseek(p)
-        if claude_c:
-            self_callers["claude"] = lambda p: call_claude(p)
+        def _analyze(prompt: str) -> str:
+            """GPT-4.1-mini로 검색 결과 분석 (비용 절감)"""
+            try:
+                r = oai.chat.completions.create(
+                    model="gpt-4.1-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=200,
+                    temperature=0.1
+                )
+                return r.choices[0].message.content.strip()
+            except Exception:
+                return ""
 
-        if not self_callers:
-            return
+        web_ok = bool(oai)  # OpenAI 없으면 웹 평가도 불가
 
         for cat in stale:
             try:
-                winner = orch.run_self_evaluation(cat, meta_caller, self_callers)
+                if web_ok:
+                    winner = orch.run_web_evaluation(cat, _search, _analyze)
+                else:
+                    # ② 폴백: 자기평가 (웹 검색 불가 시)
+                    def meta_caller(p):
+                        return call_gpt(p, model="gpt-4.1-mini", max_tokens=300)
+                    self_callers = {}
+                    if oai:
+                        self_callers["gpt-4.1"] = lambda p: call_gpt(p, max_tokens=50)
+                    if deepseek:
+                        self_callers["deepseek"] = lambda p: call_deepseek(p)
+                    if claude_c:
+                        self_callers["claude"] = lambda p: call_claude(p)
+                    if self_callers:
+                        winner = orch.run_self_evaluation(cat, meta_caller, self_callers)
                 orch.reset_streak(cat)
             except Exception:
                 pass

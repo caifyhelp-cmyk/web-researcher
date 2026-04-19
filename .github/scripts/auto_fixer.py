@@ -15,7 +15,7 @@ ISSUE_TITLE       = os.environ.get("ISSUE_TITLE", "")
 ISSUE_BODY        = os.environ.get("ISSUE_BODY", "")
 
 # 수정 대상 파일
-TARGET_FILES = ["app_local.py", "orchestrator.py", "feedback_collector.py"]
+TARGET_FILES = ["maestro.py", "app_local.py", "orchestrator.py", "feedback_collector.py"]
 
 
 # ══════════════════════════════════════════════
