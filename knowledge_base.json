@@ -1,0 +1,151 @@
+{
+  "updated_at": "2026-04-19T00:00:00",
+  "patterns": [
+    {
+      "type": "사고로직",
+      "summary": "큰 그림 먼저, 세부는 나중에",
+      "detail": "전체 방향성과 목적을 먼저 잡고, 세부 구현은 진행하면서 결정한다. '이게 가능해?'를 먼저 확인하고 가능하면 바로 실행.",
+      "example": "바이브코딩 툴 방향 → 비개발자 타겟 → Maestro에 붙이자 → 터미널 먼저",
+      "source_topic": "초기 대화",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "사고로직",
+      "summary": "이미 있는 걸 최대한 활용",
+      "detail": "새로 만들기보다 기존 자산을 재활용하는 방향을 선호. Maestro에 이미 있는 기능들을 확인하고 없는 것만 추가하는 방식.",
+      "example": "Claude Code 수준 프로그램 → 새로 만들기 전에 Maestro 기존 구조 확인",
+      "source_topic": "개발 방식",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "사고로직",
+      "summary": "검증 후 확장 전략",
+      "detail": "부업으로 작게 검증 → 잘 되면 본 사업에 편입. 리스크를 최소화하면서 확장하는 방식.",
+      "example": "AI 바이브코딩 부업으로 먼저 검증 → 회사 AI 신사업팀에 레버리지",
+      "source_topic": "비즈니스 전략",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "사고로직",
+      "summary": "시스템 설계자 사고방식",
+      "detail": "단순 기능 구현이 아니라 전체 시스템이 어떻게 연결되고 진화할지를 먼저 설계한다. 개별 기능보다 파이프라인과 자동화 구조를 중시.",
+      "example": "멀티 AI 오케스트레이션, 자동 업데이터, 패턴 수집 → GitHub 동기화 설계",
+      "source_topic": "Maestro 아키텍처",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "가치관",
+      "summary": "비용 효율 최우선",
+      "detail": "API 비용을 극도로 중시. Claude 대신 DeepSeek, 유료 서버 대신 로컬, 월정액 대신 종량제를 선호. '무료로 할 수 있나?'를 항상 먼저 탐색.",
+      "example": "Claude Code 수준을 API 없이 → DeepSeek으로 → 비용 1/20 수준",
+      "source_topic": "비용 전략",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "가치관",
+      "summary": "비개발자 접근성 핵심 가치",
+      "detail": "좋은 툴은 개발자만 쓰는 게 아니라 아이디어 있는 누구나 쓸 수 있어야 한다. 복잡한 설정 없이 말만 하면 되는 경험을 추구.",
+      "example": "Cursor/Bolt는 개발자용 → Maestro는 비개발자가 아이디어만 말하면 되는 툴",
+      "source_topic": "제품 방향",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "가치관",
+      "summary": "쓸수록 좋아지는 시스템",
+      "detail": "단순 도구가 아니라 사용자와 함께 진화하는 AI 파트너를 지향. 개인 데이터 학습 + 집단지성으로 점점 스마트해지는 구조.",
+      "example": "사용자 대화 → 패턴 추출 → 학습 → 더 잘 이해 → 반복",
+      "source_topic": "진화 시스템",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "아이디어",
+      "summary": "비개발자 바이브코딩 + 사용자 진화 학습",
+      "detail": "아이디어만 말하면 코드를 만들어주고, 그 과정에서 사용자의 사고방식/감정/패턴을 학습해 점점 그 사람에 맞춰지는 AI 코딩 파트너.",
+      "example": "Cursor는 개발자용, 이건 비개발자용 + 쓸수록 나한테 맞춰짐",
+      "source_topic": "핵심 제품 아이디어",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "아이디어",
+      "summary": "Maestro를 제품화해서 AI 자동화 솔루션으로 판매",
+      "detail": "회사에서 검증한 자동화 케이스를 Maestro에 붙여서 외부 클라이언트에게 AI 업무 자동화 솔루션으로 판매. 부업 → 본 사업 편입 루트.",
+      "example": "AI 신사업팀 팀장 포지션 + Maestro → 기업 자동화 수주",
+      "source_topic": "사업화 전략",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "아이디어",
+      "summary": "멀티 기기 동기화 → Supabase MCP",
+      "detail": "3-4개 기기에서 작업하는 환경에서 Claude Code 메모리/설정을 동기화하기 위해 Supabase를 MCP 백엔드로 활용하는 아이디어.",
+      "example": "Git 동기화는 귀찮음 → Supabase MCP로 어느 기기서든 자동 동기화",
+      "source_topic": "멀티 기기 세팅",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "요청방식",
+      "summary": "핵심만 짧게, 맥락은 생략",
+      "detail": "긴 설명 없이 핵심 의도만 전달. AI가 맥락을 파악해서 채워주길 기대. '이거 돼?' '해줘' 식의 직관적 요청.",
+      "example": "'apk 체크해줘', '환경변수로 넣고 실행해봐', '이제 제작인가?'",
+      "source_topic": "소통 스타일",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "요청방식",
+      "summary": "가능성 탐색 후 바로 실행 위임",
+      "detail": "'이게 가능해?' → 가능하면 '그럼 해줘'로 바로 이어짐. 기획과 실행 사이 간격이 매우 짧음.",
+      "example": "Claude Code 수준 가능해? → 응 좋아 → 바로 제작",
+      "source_topic": "의사결정 속도",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "활용패턴",
+      "summary": "멀티 AI 조합으로 비용 최소화",
+      "detail": "단일 AI가 아니라 상황별 최적 AI를 자동 선택. 비싼 Claude는 판단/글쓰기, 저렴한 DeepSeek은 코드/추론으로 역할 분담.",
+      "example": "DeepSeek 코드 생성 + Claude 전략 분석 + Gemini 시장조사",
+      "source_topic": "AI 활용 전략",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "활용패턴",
+      "summary": "깃허브를 중앙 허브로 활용",
+      "detail": "코드뿐 아니라 데이터, 설정, 학습 결과까지 GitHub에 집중. 멀티 기기 동기화와 버전 관리를 GitHub 하나로 해결하려는 패턴.",
+      "example": "knowledge_base.json, 암호화 로그, API 키 관리까지 GitHub 중심",
+      "source_topic": "인프라 전략",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "감정패턴",
+      "summary": "막히면 대안 탐색, 포기 없음",
+      "detail": "API 없음 → 로컬 LLM 탐색, 서버 비용 → 데스크탑 앱, Git 동기화 번거로움 → MCP 방식. 막히면 다른 루트를 빠르게 탐색.",
+      "example": "'아니면 이런 방법은?' 패턴이 대화 전반에 반복",
+      "source_topic": "문제해결 방식",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    },
+    {
+      "type": "감정패턴",
+      "summary": "확인/검증에서 안도감",
+      "detail": "뭔가 작동한다는 걸 직접 확인했을 때 다음 단계로 빠르게 이동. 불확실한 상태를 불편해하고 빠른 확인을 선호.",
+      "example": "DeepSeek 연결 OK 확인 → 바로 '이제 제작인가?'로 이동",
+      "source_topic": "심리 패턴",
+      "extracted_at": "2026-04-19T00:00:00",
+      "status": "approved"
+    }
+  ],
+  "ideas": [],
+  "workflows": []
+}
