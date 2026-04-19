@@ -1040,6 +1040,44 @@ def _save_ppt(base, topic, analysis):
 # ═══════════════════════════════════════════════════════
 #  오케스트레이터 피드백 수집
 # ═══════════════════════════════════════════════════════
+def _sanitize_feedback_comment(comment: str) -> str:
+    """
+    사용자 피드백 코멘트를 안전하게 정제합니다.
+
+    - 코드 주입 시도 제거 (eval/exec/os.system 등)
+    - 프롬프트 주입 시도 감지 및 무력화
+    - 500자 초과 잘라내기
+    - 위험 패턴 감지 시 "[검토 필요]" 태그 추가
+    """
+    import re as _re
+
+    # 길이 제한
+    comment = comment[:500]
+
+    # 위험 패턴 감지
+    danger_patterns = [
+        r"(ignore|forget|disregard).*(previous|above|instructions?|system)",  # 프롬프트 주입
+        r"(you are|act as|pretend|roleplay).*(admin|root|system|developer)",  # 역할 주입
+        r"os\.(system|popen|exec)\s*\(",   # 코드 주입
+        r"\beval\s*\(|\bexec\s*\(",
+        r"api.?key|secret.?key|password",  # 민감 정보 요청
+        r"(delete|drop|truncate)\s+(all|table|database)",  # DB 파괴
+    ]
+
+    flagged = False
+    for pattern in danger_patterns:
+        if _re.search(pattern, comment, _re.IGNORECASE):
+            flagged = True
+            break
+
+    if flagged:
+        # 위험 내용 무력화: 꺾쇠로 감싸서 코드로 처리 안 되게 함
+        safe = _re.sub(r'[<>{}()\[\]]', '', comment)
+        return f"[자동검토됨] {safe[:200]}"
+
+    return comment
+
+
 def _collect_feedback(topic: str, plan: dict, analysis: dict):
     """리서치 결과에 대한 사용자 평점 수집 → 오케스트레이터 학습 DB 저장"""
     console.print()
@@ -1079,6 +1117,10 @@ def _collect_feedback(topic: str, plan: dict, analysis: dict):
         bad_needs    = _parse_nums(bad_raw, needs)
 
     comment = Prompt.ask("[dim]한마디 코멘트 (없으면 엔터)[/dim]", default="").strip()
+
+    # ── 코멘트 안전 검사 (악의적 내용 차단) ─────────────────────────
+    if comment:
+        comment = _sanitize_feedback_comment(comment)
 
     orch.record_feedback(
         topic=topic, plan=plan, analysis=analysis,
