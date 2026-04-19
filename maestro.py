@@ -2631,6 +2631,23 @@ def main():
         # GPT-4o 컨텍스트는 최근 20턴만 (비용/속도 최적화)
         # history 자체는 전체 유지, run_agent에서 슬라이싱
 
+    # ── 세션 종료 시 자동 진화 파이프라인 ──────────────────────
+    if history and _PC:
+        try:
+            topic = history[0]["content"][:80] if history else "대화"
+            conversation = "\n".join(
+                f"{'User' if h['role']=='user' else 'MAESTRO'}: {h['content'][:500]}"
+                for h in history[-40:]  # 최근 20턴
+            )
+            console.print("[dim]  세션 데이터 저장 중...[/dim]")
+            _pc.process_conversation(
+                topic=topic,
+                conversation=conversation,
+                session_id=_current_session_id
+            )
+        except Exception:
+            pass
+
 
 def _show_sessions(sessions: list):
     from rich.table import Table

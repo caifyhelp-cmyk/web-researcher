@@ -24,7 +24,9 @@ _HERE = Path(__file__).parent
 _KB_PATH      = _HERE / "knowledge_base.json"
 _PENDING_PATH = _HERE / "knowledge_pending.json"
 
-OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_KEY    = os.getenv("OPENAI_API_KEY", "")
+DEEPSEEK_KEY  = os.getenv("DEEPSEEK_API_KEY", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 _GH_TOKEN  = (os.getenv("GITHUB_TOKEN", "") or os.getenv("GH_TOKEN", "")
               or os.getenv("GITHUB_DATA_TOKEN", ""))
 _GH_REPO   = "caifyhelp-cmyk/web-researcher"
@@ -204,43 +206,54 @@ def pull_kb_from_github() -> bool:
     return False
 
 
-def extract_patterns(topic: str, conversation: str, score: int) -> list:
+def _get_llm_client():
+    """사용 가능한 LLM 클라이언트 반환 (OpenAI → DeepSeek → Anthropic 순)"""
+    try:
+        from openai import OpenAI
+        if OPENAI_KEY:
+            return ("openai", OpenAI(api_key=OPENAI_KEY), "gpt-4o-mini")
+        if DEEPSEEK_KEY:
+            return ("deepseek", OpenAI(api_key=DEEPSEEK_KEY, base_url="https://api.deepseek.com"), "deepseek-chat")
+    except Exception:
+        pass
+    return (None, None, None)
+
+
+def extract_patterns(topic: str, conversation: str, score: int = 0) -> list:
     """
-    대화에서 좋은 아이디어/패턴/로직을 추출.
-    점수 3 이상 대화만 분석 (좋은 경험에서만 추출).
+    대화에서 아이디어/패턴/사고로직/감정패턴을 추출.
+    score 무관하게 모든 대화에서 추출 (사용자 진화 데이터 확보).
     """
-    if score < 3:
-        return []
-    if not OPENAI_KEY:
+    provider, client, model = _get_llm_client()
+    if not client:
         return []
 
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_KEY)
+        safe_conv = _remove_pii(conversation[:4000])
 
-        # PII 제거 후 GPT 전송
-        safe_conv = _remove_pii(conversation[:3000])
-
-        prompt = f"""아래 대화에서 다른 사용자들에게도 도움이 될 만한 좋은 아이디어, 활용 패턴, 효과적인 요청 방식을 추출하세요.
+        prompt = f"""아래는 AI 어시스턴트 MAESTRO와 사용자의 실제 대화입니다.
+이 대화에서 MAESTRO가 앞으로 더 잘 이해하고 진화하기 위한 패턴을 추출하세요.
 
 주제: {topic}
 대화:
 {safe_conv}
 
-추출 기준:
-- 창의적인 활용 방식
-- 효과적인 문제 해결 접근
-- 다른 사용자도 참고할 만한 사고방식
-- 좋은 요청 패턴 (어떻게 요청하면 좋은 결과가 나왔는지)
+추출 대상:
+1. 사고로직 — 이 사람이 문제를 어떻게 접근하고 생각하는가
+2. 감정패턴 — 어떤 상황에서 어떤 감정 반응을 보이는가 (불만, 흥미, 확신 등)
+3. 요청방식 — 어떻게 요청할 때 좋은 결과가 나왔는가
+4. 아이디어 — 창의적이거나 독특한 아이디어/인사이트
+5. 활용패턴 — 도구/AI를 활용하는 특징적인 방식
+6. 가치관 — 이 사람이 중요하게 여기는 것, 판단 기준
 
 반드시 아래 JSON 형식으로만 출력:
 {{
   "patterns": [
     {{
-      "type": "활용패턴|아이디어|요청방식|사고로직",
+      "type": "사고로직|감정패턴|요청방식|아이디어|활용패턴|가치관",
       "summary": "한 줄 요약",
       "detail": "구체적 내용 (2-3문장)",
-      "example": "실제 사용 예시"
+      "example": "대화에서 발견된 실제 예시"
     }}
   ]
 }}
@@ -248,9 +261,9 @@ def extract_patterns(topic: str, conversation: str, score: int) -> list:
 패턴이 없으면: {{"patterns": []}}"""
 
         r = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1000,
+            max_tokens=1500,
             temperature=0.3
         )
         raw = r.choices[0].message.content.strip()
@@ -261,6 +274,38 @@ def extract_patterns(topic: str, conversation: str, score: int) -> list:
     except Exception:
         pass
     return []
+
+
+def encrypt_conversation(conversation: str) -> str:
+    """대화 내용 암호화 (base64 + 간단 XOR — 개인정보 보호용)"""
+    import base64
+    key = b"maestro_evolution_key_2025"
+    encoded = conversation.encode("utf-8")
+    encrypted = bytes([b ^ key[i % len(key)] for i, b in enumerate(encoded)])
+    return base64.b64encode(encrypted).decode()
+
+
+def push_encrypted_log(session_id: str, conversation: str):
+    """암호화된 대화 로그를 GitHub에 푸시 (진화 데이터 축적)"""
+    if not _GH_TOKEN:
+        return False
+    try:
+        import base64 as b64
+        safe_conv = _remove_pii(conversation)
+        encrypted = encrypt_conversation(safe_conv)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"logs/{timestamp}_{session_id[:8]}.enc"
+
+        content_b64 = b64.b64encode(encrypted.encode()).decode()
+        payload = {
+            "message": f"data: 대화 로그 ({timestamp})",
+            "content": content_b64,
+            "branch":  _GH_BRANCH,
+        }
+        result = _gh_api("PUT", f"contents/{filename}", payload)
+        return "content" in result
+    except Exception:
+        return False
 
 
 # ══════════════════════════════════════════════
@@ -368,13 +413,25 @@ def build_knowledge_prompt() -> str:
 #  전체 파이프라인 (feedback_collector에서 호출)
 # ══════════════════════════════════════════════
 
-def process_conversation(topic: str, conversation: str, score: int):
-    """대화 처리 → 패턴 추출 → 대기열 추가 → GitHub 동기화"""
-    patterns = extract_patterns(topic, conversation, score)
-    if patterns:
-        add_to_pending(patterns, topic)
-        print(f"  [집단지성] {len(patterns)}개 패턴 추출 → 검토 대기열 추가")
-        push_pending_to_github()  # 모든 PC의 패턴이 GitHub으로 집중
+def process_conversation(topic: str, conversation: str, score: int = 0, session_id: str = ""):
+    """대화 처리 → 암호화 로그 푸시 → 패턴 추출 → 대기열 추가 → GitHub 동기화"""
+    import threading
+
+    def _run():
+        # 1. 암호화 로그 항상 푸시 (점수 무관)
+        if session_id and _GH_TOKEN:
+            push_encrypted_log(session_id, conversation)
+
+        # 2. 패턴 추출 (모든 대화에서)
+        patterns = extract_patterns(topic, conversation, score)
+        if patterns:
+            add_to_pending(patterns, topic)
+            push_pending_to_github()
+
+    # 백그라운드 실행 (종료 딜레이 없음)
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
 
 
 if __name__ == "__main__":
