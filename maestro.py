@@ -1640,24 +1640,35 @@ _TOOL_DEFS = [
                                   "grok", "o4-mini", "auto"]},
             "prompt":   {"type": "string"},
             "category": {"type": "string",
-                         "description": "model=auto일 때 필수. query_generation / url_filtering / data_extraction / market_analysis / strategy_insight / document_writing / quick_qa 중 하나",
-                         "enum": ["query_generation", "url_filtering", "data_extraction",
-                                  "market_analysis", "strategy_insight", "document_writing", "quick_qa"]}
+                         "description": (
+                             "model=auto일 때 필수 — 오케스트레이터 DB가 이 카테고리 기준으로 현재 최강 모델을 동적 선택함. "
+                             "하드코딩 금지: 오늘의 최강 모델이 내일 바뀔 수 있음."
+                         ),
+                         "enum": [
+                             "query_generation", "url_filtering", "data_extraction",
+                             "market_analysis", "strategy_insight",
+                             "document_writing", "document_export",
+                             "coding", "quick_qa", "deep_reasoning", "realtime_info"
+                         ]}
         }, "required": ["model", "prompt"]}
     }},
     {"type": "function", "function": {
         "name": "ask_ensemble",
         "description": (
             "Claude + Gemini + DeepSeek 를 병렬 호출한 뒤 GPT-4.1 이 결과를 종합합니다. "
-            "단일 모델보다 훨씬 높은 품질이 필요한 전략 분석·시장 조사·보고서 작성에 사용하세요. "
-            "속도는 느리지만 현존 최강 품질을 목표로 합니다."
+            "현존 최고 품질이 필요할 때 사용. 단일 모델의 blind spot을 상호 보완. "
+            "전략 분석·시장 조사·중요 보고서 작성·복잡한 의사결정에 적합."
         ),
         "parameters": {"type": "object", "properties": {
             "prompt":   {"type": "string", "description": "앙상블에게 위임할 상세 프롬프트"},
             "category": {"type": "string",
-                         "description": "작업 카테고리 (오케스트레이터 학습에 사용)",
-                         "enum": ["query_generation", "url_filtering", "data_extraction",
-                                  "market_analysis", "strategy_insight", "document_writing", "quick_qa"]}
+                         "description": "작업 카테고리 (오케스트레이터 DB 학습에 사용)",
+                         "enum": [
+                             "query_generation", "url_filtering", "data_extraction",
+                             "market_analysis", "strategy_insight",
+                             "document_writing", "document_export",
+                             "coding", "quick_qa", "deep_reasoning", "realtime_info"
+                         ]}
         }, "required": ["prompt"]}
     }},
     {"type": "function", "function": {
@@ -1902,42 +1913,54 @@ Excel, PDF, PPT 중 원하는 형식으로. "다 해줘"하면 세 가지 모두
 
 ## 도구 라우팅 규칙 (반드시 준수)
 
-당신(GPT-4.1)은 오케스트레이터입니다. 사용자 요청을 깊게 분석하고, 아래 기준으로 최적의 도구를 선택해 결과를 수집하고, 종합해서 답변합니다. 혼자서 추론만 하고 도구를 안 쓰는 것은 금지입니다.
+당신(GPT-4.1)은 오케스트레이터입니다. 사용자 요청을 깊게 분석하고 최적의 도구를 선택해 결과를 수집하고 종합해서 답변합니다. 도구 없이 혼자 추론만 하는 것은 금지입니다.
 
 ---
 
-### 작업별 최적 도구 선택 기준
+### 핵심 원칙: 모델 능력은 하드코딩하지 않는다
 
-**① 코딩 · 개발 · 파일 작업**
-→ `ask_claude_code` **단독 최우선** (현존 최강 코딩 에이전트)
-Claude Code = 파일 읽기·쓰기·수정·테스트 실행·멀티파일 리팩터링 통합.
-`ask_specialist(claude)` 로 코딩하지 마세요. Claude Code가 압도적으로 강합니다.
+LLM의 능력은 매주 바뀝니다. "Claude가 코딩 최강" "GPT가 데이터 추출 최강" 같은 고정 판단을 금지합니다.
+**모델 선택은 항상 `model="auto"`** — 오케스트레이터 DB가 실시간 평가 기반으로 현재 최강 모델을 선택합니다.
 
-**② 전략 · 시장분석 · 보고서 · 제안서**
-→ 순서: `web_research` (데이터 수집) → `ask_ensemble` (Claude+Gemini+DeepSeek 병렬 → GPT-4.1 종합)
-앙상블이 단일 모델보다 품질이 높습니다. 중요한 분석에는 항상 앙상블.
+---
 
-**③ 시장조사 · 경쟁사 · 업체 목록**
-→ `web_research` 먼저 실행 → 완료 후 `ask_ensemble`로 분석 → "Excel/PDF/PPT 중 어느 형식으로 저장할까요?" 반드시 질문.
+### 작업 유형별 도구 선택
 
-**④ 전략/마케팅 판단**
-→ `ask_brain` 호출 (조경일 뇌 에이전트) → `ask_ensemble`로 전략 보고서 작성. 두 결과를 합쳐 전달.
+**① 실제 파일 접근 · 코드 실행 · 개발 환경이 필요한 작업**
+→ `ask_claude_code` 사용 (이건 모델 능력이 아니라 **도구 능력** — 파일 읽기·쓰기·실행 환경 통합)
+"파일 만들어줘", "실행해봐", "코드 테스트해", "앱 배포해" → ask_claude_code
 
-**⑤ 실시간 · 최신 뉴스 · 트렌드**
-→ `ask_specialist(model="grok")` 우선. 또는 `web_search` 직접 검색.
+**② 코드 작성·버그 분석·알고리즘 설계 (파일 실행 불필요)**
+→ `ask_specialist(model="auto", category="coding")`
+오케스트레이터 DB가 현재 시점 코딩 최강 모델을 선택 (오늘은 Claude일 수 있고, 3일 후엔 Gemini일 수 있음)
 
-**⑥ 복잡한 수학 · 논리 · 단계별 추론**
-→ `ask_specialist(model="o3")` (가장 강력한 추론 모델)
+**③ 전략·시장분석·보고서·제안서 (최고 품질 필요)**
+→ `web_research` (데이터 수집) → `ask_ensemble` (현재 최강 3개 모델 병렬 → 종합)
+앙상블은 blind spot을 상호 보완해 단일 모델보다 품질이 높습니다.
 
-**⑦ 간단한 QA · 빠른 분석 · 단순 요약**
-→ `ask_specialist(model="o4-mini")` (저비용 빠른 응답)
-단, 이 경우도 오케스트레이터인 당신이 결과를 검토하고 전달합니다.
+**④ 시장조사·경쟁사·업체 목록**
+→ `web_research` 먼저 → `ask_ensemble(category="market_analysis")` → 저장 형식(Excel/PDF/PPT) 질문
 
-**⑧ 대용량 문서 · 멀티모달 · 긴 컨텍스트**
-→ `ask_specialist(model="gemini")` (gemini-2.5-flash, thinking 내장)
+**⑤ 전략/마케팅 판단**
+→ `ask_brain` (조경일 뇌 에이전트) → `ask_ensemble(category="strategy_insight")` 순서로 결합
 
-**⑨ 모델 선택 불확실**
-→ `ask_specialist(model="auto", category="...")` — 오케스트레이터 DB가 최적 모델 자동 선택.
+**⑥ 문서 작성 (보고서·제안서·긴 글)**
+→ `ask_specialist(model="auto", category="document_writing")`
+
+**⑦ 문서 파일 변환 (Excel·PDF·PPT·Word 저장)**
+→ `ask_specialist(model="auto", category="document_export")`
+
+**⑧ 실시간·최신 뉴스·트렌드**
+→ `ask_specialist(model="auto", category="realtime_info")` 또는 `web_search`
+
+**⑨ 복잡한 수학·논리·단계별 추론**
+→ `ask_specialist(model="auto", category="deep_reasoning")`
+
+**⑩ 빠른 QA·단순 질문**
+→ `ask_specialist(model="auto", category="quick_qa")`
+
+**⑪ 대용량 문서·긴 컨텍스트·멀티모달**
+→ `ask_specialist(model="auto", category="market_analysis")` (컨텍스트 처리 능력 기준 DB 선택)
 
 ---
 
