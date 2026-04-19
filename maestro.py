@@ -62,15 +62,18 @@ except ImportError:
     _HAS_Q = False
 
 
+_NAV_HINT = "  [dim](↑↓ 방향키로 이동  |  ↵ Enter로 선택)[/dim]"
+
+
 def _select(message: str, choices: list, default: str = None) -> str:
     """방향키 선택 (questionary 없으면 텍스트 폴백)"""
     if _HAS_Q:
         choice_values = [c if isinstance(c, str) else c["value"] for c in choices]
         choice_names  = [c if isinstance(c, str) else c["name"]  for c in choices]
         display = [{"name": n, "value": v} for n, v in zip(choice_names, choice_values)]
+        console.print(_NAV_HINT)
         result = questionary.select(message, choices=display, default=default, style=_Q_STYLE).ask()
         return result if result is not None else (default or choice_values[0])
-    # 폴백: 텍스트 입력
     opts = "/".join([c if isinstance(c, str) else c["value"] for c in choices])
     return Prompt.ask(f"{message} ({opts})", default=default or "")
 
@@ -78,6 +81,7 @@ def _select(message: str, choices: list, default: str = None) -> str:
 def _confirm(message: str, default: bool = True) -> bool:
     """방향키 예/아니오 선택"""
     if _HAS_Q:
+        console.print("  [dim](↑↓ 방향키로 이동  |  ↵ Enter로 진입)[/dim]")
         result = questionary.confirm(message, default=default, style=_Q_STYLE).ask()
         return result if result is not None else default
     return Confirm.ask(message, default=default)
