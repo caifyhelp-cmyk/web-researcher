@@ -1,0 +1,195 @@
+name: MAESTRO APK 빌드 & 서명
+
+# 트리거:
+#   - v* 태그 푸시 → Release APK 빌드 + GitHub Releases 첨부
+#   - 수동 실행 (workflow_dispatch) → Debug APK 빌드
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: '빌드 타입'
+        required: true
+        default: 'debug'
+        type: choice
+        options: [debug, release]
+
+env:
+  PYTHON_VERSION: '3.11'
+  BUILDOZER_VERSION: '1.5.0'
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      # ── 1. 소스 체크아웃 ───────────────────────────────────────
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      # ── 2. Python 설정 ────────────────────────────────────────
+      - name: Python ${{ env.PYTHON_VERSION }} 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      # ── 3. 시스템 의존성 ──────────────────────────────────────
+      - name: 시스템 패키지 설치
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git zip unzip \
+            openjdk-17-jdk \
+            libssl-dev libffi-dev \
+            libsdl2-dev libsdl2-image-dev libsdl2-mixer-dev libsdl2-ttf-dev \
+            libportmidi-dev libswscale-dev libavformat-dev libavcodec-dev \
+            zlib1g-dev libpng-dev \
+            libgstreamer1.0-0 gstreamer1.0-plugins-base \
+            libgl1-mesa-dev libgles2-mesa-dev \
+            ccache
+
+      - name: JAVA_HOME 설정
+        run: echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> $GITHUB_ENV
+
+      # ── 4. Buildozer & Cython 설치 ────────────────────────────
+      - name: Buildozer 설치
+        run: |
+          pip install --upgrade pip wheel setuptools
+          pip install buildozer==${{ env.BUILDOZER_VERSION }} cython==3.0.11
+
+      # ── 5. Android SDK/NDK 캐시 ──────────────────────────────
+      - name: Android 플랫폼 캐시
+        uses: actions/cache@v4
+        id: android-cache
+        with:
+          path: |
+            ~/.buildozer/android/platform
+            ~/.buildozer/android/packages
+          key: android-platform-${{ hashFiles('mobile/buildozer.spec') }}-v2
+          restore-keys: android-platform-
+
+      - name: Buildozer 캐시 (.buildozer 폴더)
+        uses: actions/cache@v4
+        with:
+          path: mobile/.buildozer
+          key: buildozer-${{ hashFiles('mobile/buildozer.spec') }}-${{ github.sha }}
+          restore-keys: buildozer-${{ hashFiles('mobile/buildozer.spec') }}-
+
+      # ── 6. 빌드 타입 결정 ────────────────────────────────────
+      - name: 빌드 타입 결정
+        id: build_type
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "type=release" >> $GITHUB_OUTPUT
+          else
+            echo "type=${{ inputs.build_type || 'debug' }}" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 7. Release 서명 키스토어 설정 ────────────────────────
+      - name: Android Keystore 설정 (Release만)
+        if: steps.build_type.outputs.type == 'release'
+        run: |
+          # GitHub Secrets 에서 base64 인코딩된 keystore 디코딩
+          echo "${{ secrets.MAESTRO_KEYSTORE_B64 }}" | base64 -d > mobile/maestro-release.keystore
+          echo "KEYSTORE_FILE=$(pwd)/mobile/maestro-release.keystore" >> $GITHUB_ENV
+          echo "KEYSTORE_PASS=${{ secrets.MAESTRO_KEYSTORE_PASS }}"   >> $GITHUB_ENV
+        # 사전 준비:
+        #   keytool -genkey -v -keystore maestro-release.keystore \
+        #           -alias maestro -keyalg RSA -keysize 4096 \
+        #           -validity 10000
+        #   cat maestro-release.keystore | base64 > ks.b64
+        #   → GitHub Secrets: MAESTRO_KEYSTORE_B64, MAESTRO_KEYSTORE_PASS
+
+      # ── 8. APK 빌드 ──────────────────────────────────────────
+      - name: APK 빌드 (${{ steps.build_type.outputs.type }})
+        working-directory: mobile
+        run: |
+          buildozer android ${{ steps.build_type.outputs.type }} 2>&1 | \
+            grep -v "^DEBUG:" | tail -150
+
+      # ── 9. APK 검증 ──────────────────────────────────────────
+      - name: APK 파일 검증
+        run: |
+          APK_FILE=$(find mobile/bin -name "*.apk" | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ APK 빌드 실패 — bin 폴더에 APK 없음"
+            exit 1
+          fi
+          echo "✅ APK: $APK_FILE"
+          echo "   크기: $(du -sh "$APK_FILE" | cut -f1)"
+          echo "APK_PATH=$APK_FILE" >> $GITHUB_ENV
+
+          # APK 무결성 검증 (ZIP 형식 확인)
+          python3 -c "
+          import zipfile, sys
+          try:
+              with zipfile.ZipFile('$APK_FILE') as z:
+                  names = z.namelist()
+                  assert 'AndroidManifest.xml' in names, 'AndroidManifest.xml 없음'
+                  print(f'   파일 수: {len(names)}')
+          except Exception as e:
+              print(f'검증 실패: {e}'); sys.exit(1)
+          "
+
+      # ── 10. SHA-256 체크섬 생성 ──────────────────────────────
+      - name: SHA-256 체크섬
+        run: |
+          sha256sum "$APK_PATH" > "${APK_PATH}.sha256"
+          echo "   SHA256: $(cut -d' ' -f1 ${APK_PATH}.sha256)"
+
+      # ── 11. 아티팩트 업로드 ──────────────────────────────────
+      - name: APK 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-apk-${{ github.run_number }}-${{ steps.build_type.outputs.type }}
+          path: |
+            mobile/bin/*.apk
+            mobile/bin/*.sha256
+          retention-days: 30
+
+      # ── 12. GitHub Release (태그 푸시 시) ────────────────────
+      - name: GitHub Release 생성
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mobile/bin/*.apk
+            mobile/bin/*.sha256
+          name: "MAESTRO ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          body: |
+            ## MAESTRO Android APK  ${{ github.ref_name }}
+
+            ### 설치 방법
+            1. 아래 `.apk` 파일 다운로드
+            2. Android → **설정 → 보안 → 알 수 없는 출처 허용**
+            3. APK 설치 후 앱 실행
+            4. 설정 화면에서 API 키 입력 (AES-256 암호화 저장)
+
+            ### 보안 특이사항
+            - 인터넷 권한 **만** 사용 (저장소/연락처/위치 등 없음)
+            - API 키: 기기 바인딩 AES-256 암호화 저장
+            - cleartext HTTP 완전 차단 (HTTPS 전용)
+            - 앱 백업 비활성화 (클라우드 키 노출 방지)
+
+            ### 필요 API 키 (최소 1개)
+            | 키 | 용도 |
+            |---|---|
+            | OpenAI API Key | 오케스트레이터 필수 |
+            | Anthropic API Key | Claude (앙상블/코딩) |
+            | DeepSeek API Key | 추론 전문 |
+            | Gemini API Key | 멀티모달/검색 |
+            | Grok API Key | 실시간 정보 |
+
+            ### SHA-256 체크섬
+            ```
+            $(cat mobile/bin/*.sha256 2>/dev/null || echo "체크섬 파일 확인 필요")
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

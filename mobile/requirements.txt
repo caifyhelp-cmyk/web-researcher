@@ -1,0 +1,22 @@
+# MAESTRO 모바일 앱 개발/테스트 의존성
+# PC에서 테스트: pip install -r requirements.txt && python main.py
+#
+# 프로덕션 APK 빌드: buildozer.spec의 requirements 항목이 사용됨
+
+# UI
+kivy==2.3.0
+
+# 보안 (키 암호화 필수)
+cryptography==43.0.3
+
+# LLM
+openai>=1.50.0
+anthropic>=0.34.0
+
+# 네트워크
+requests>=2.32.3
+certifi>=2024.8.30
+
+# 도구
+duckduckgo_search>=6.2.0
+rich>=13.7.0
