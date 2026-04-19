@@ -180,24 +180,25 @@ def _get_selenium_driver():
 # ── 쿼리 복잡도 티어 판단 ─────────────────────────────────────────
 def _judge_query_tier(text: str) -> str:
     """
-    사용자 입력의 복잡도를 판단해 'simple' / 'medium' / 'complex' 반환.
-    simple  → o4-mini 직접 답변 (빠르고 저렴)
-    medium  → gpt-4.1 표준 루프
-    complex → gpt-4.1 루프 + 앙상블 권장
+    사용자 입력의 복잡도를 판단해 'medium' / 'complex' 반환.
+    오케스트레이터(gpt-4.1)는 항상 실행됨 — 바이패스 없음.
+
+    medium  → gpt-4.1 표준 ReAct 루프 (오케스트레이터가 적절한 specialist 선택)
+    complex → gpt-4.1 루프 + 첫 도구로 ask_ensemble 또는 ask_claude_code 강제
     """
     t = text.lower()
-    # 복잡: 리서치·전략·보고서·코딩 등 도구 필요
-    complex_kw = ["조사", "분석", "보고서", "비교", "시장", "경쟁사", "전략", "마케팅",
-                  "코드", "코딩", "개발", "구현", "작성해", "만들어", "짜줘", "수정",
-                  "리팩터", "버그", "앱", "웹사이트", "research", "analyze",
-                  "plan", "앙상블", "여러 llm", "종합", "함수", "클래스", "api"]
-    # 단순: 짧은 질문·날씨·번역·단순 QA
-    simple_kw  = ["안녕", "뭐야", "뭔가요", "알려줘", "번역", "설명해", "정의",
-                  "이게 뭐", "간단히", "빠르게", "hello", "hi ", "what is", "define"]
+    complex_kw = [
+        # 전략·분석
+        "조사", "분석", "보고서", "비교", "시장", "경쟁사", "전략", "마케팅",
+        "제안서", "기획", "리포트", "인사이트", "트렌드",
+        # 코딩·개발
+        "코드", "코딩", "개발", "구현", "작성해", "만들어", "짜줘", "수정",
+        "리팩터", "버그", "앱", "웹사이트", "함수", "클래스", "api", "서버",
+        # 리서치
+        "research", "analyze", "plan", "앙상블", "종합",
+    ]
     if any(k in t for k in complex_kw):
         return "complex"
-    if len(text) < 30 or any(k in t for k in simple_kw):
-        return "simple"
     return "medium"
 
 
@@ -1901,34 +1902,44 @@ Excel, PDF, PPT 중 원하는 형식으로. "다 해줘"하면 세 가지 모두
 
 ## 도구 라우팅 규칙 (반드시 준수)
 
-**리서치/시장조사/경쟁사 분석** → "조사", "분석", "비교", "경쟁사", "업체 목록", "시장 현황" 키워드 감지 시
-web_research 먼저 실행 → 완료 후 "Excel/PDF/PPT 중 어떤 형식으로 저장할까요?" 반드시 물어볼 것.
+당신(GPT-4.1)은 오케스트레이터입니다. 사용자 요청을 깊게 분석하고, 아래 기준으로 최적의 도구를 선택해 결과를 수집하고, 종합해서 답변합니다. 혼자서 추론만 하고 도구를 안 쓰는 것은 금지입니다.
 
-**전략/마케팅 판단** → ask_brain 먼저 호출 → 이어서 ask_specialist(model="claude", ...) 로 전략 보고서 작성.
-두 결과를 합쳐서 사용자에게 전달.
+---
 
-**코딩/개발/파일 작업** → **ask_claude_code 최우선 (현존 최강 코딩 에이전트)**
-Claude Code는 파일 읽기·쓰기·수정·테스트 실행까지 통합된 실제 개발 환경입니다.
-"코드 짜줘", "버그 고쳐줘", "앱 만들어줘", "함수 작성", "리팩터링" → ask_claude_code 즉시 호출.
-절대로 ask_specialist(claude)로 코딩하지 마세요. Claude Code가 10배 강합니다.
+### 작업별 최적 도구 선택 기준
 
-**최신 뉴스/실시간 정보** → "최근", "요즘", "2026년", "지금" 키워드 → ask_specialist(model="grok", ...) 우선.
+**① 코딩 · 개발 · 파일 작업**
+→ `ask_claude_code` **단독 최우선** (현존 최강 코딩 에이전트)
+Claude Code = 파일 읽기·쓰기·수정·테스트 실행·멀티파일 리팩터링 통합.
+`ask_specialist(claude)` 로 코딩하지 마세요. Claude Code가 압도적으로 강합니다.
 
-**복잡한 추론/수학/논리** → ask_specialist(model="o3", ...). 단순 분석은 ask_specialist(model="o4-mini", ...).
+**② 전략 · 시장분석 · 보고서 · 제안서**
+→ 순서: `web_research` (데이터 수집) → `ask_ensemble` (Claude+Gemini+DeepSeek 병렬 → GPT-4.1 종합)
+앙상블이 단일 모델보다 품질이 높습니다. 중요한 분석에는 항상 앙상블.
 
-**보고서/제안서/긴 문서 작성** → ask_specialist(model="claude", category="document_writing"). (claude-opus-4-6 사용)
+**③ 시장조사 · 경쟁사 · 업체 목록**
+→ `web_research` 먼저 실행 → 완료 후 `ask_ensemble`로 분석 → "Excel/PDF/PPT 중 어느 형식으로 저장할까요?" 반드시 질문.
 
-**대용량 컨텍스트/멀티모달/문서 요약** → ask_specialist(model="gemini", ...). (gemini-2.5-flash thinking 내장)
+**④ 전략/마케팅 판단**
+→ `ask_brain` 호출 (조경일 뇌 에이전트) → `ask_ensemble`로 전략 보고서 작성. 두 결과를 합쳐 전달.
 
-**데이터 추출/구조화 출력/코딩** → ask_specialist(model="gpt-4.1", ...).
+**⑤ 실시간 · 최신 뉴스 · 트렌드**
+→ `ask_specialist(model="grok")` 우선. 또는 `web_search` 직접 검색.
 
-**모델 선택이 불확실할 때** → ask_specialist(model="auto", category="[해당 카테고리]").
+**⑥ 복잡한 수학 · 논리 · 단계별 추론**
+→ `ask_specialist(model="o3")` (가장 강력한 추론 모델)
 
-**전략·시장 분석·보고서 작성** → ask_ensemble이 기본값 (Default).
-ask_ensemble = Claude-opus-4-6 + Gemini-2.5-Flash + DeepSeek-R2 병렬 → GPT-4.1 종합.
-리서치 결과가 있으면 그것을 prompt에 담아 ask_ensemble에 전달하세요.
-"시장 분석", "전략", "보고서", "제안서", "경쟁사 분석", "마케팅 플랜" → ask_ensemble 호출.
-단일 모델(ask_specialist)은 앙상블보다 품질이 낮습니다. 중요한 작업에는 항상 앙상블 우선.
+**⑦ 간단한 QA · 빠른 분석 · 단순 요약**
+→ `ask_specialist(model="o4-mini")` (저비용 빠른 응답)
+단, 이 경우도 오케스트레이터인 당신이 결과를 검토하고 전달합니다.
+
+**⑧ 대용량 문서 · 멀티모달 · 긴 컨텍스트**
+→ `ask_specialist(model="gemini")` (gemini-2.5-flash, thinking 내장)
+
+**⑨ 모델 선택 불확실**
+→ `ask_specialist(model="auto", category="...")` — 오케스트레이터 DB가 최적 모델 자동 선택.
+
+---
 
 **도구 실패 시 필수 행동** → 실패 사실을 사용자에게 반드시 명시. "도구가 실패해 학습 데이터로 답했습니다"라고 밝힐 것. 오류를 숨기고 아는 척 금지.
 
@@ -1965,37 +1976,20 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     if user_input and not any("\uAC00" <= c <= "\uD7A3" for c in user_input):
         content = user_input + "\n(반드시 한국어로 답변)"
 
-    # ── 비용 티어 라우팅 ──────────────────────────────────────────
+    # ── 복잡도 판단: 오케스트레이터는 항상 실행, 첫 도구만 유도 ──
     tier = _judge_query_tier(user_input)
-
-    if tier == "simple" and not history:
-        # 단순 질문: o4-mini 직접 응답 (빠르고 저렴)
-        if oai:
-            try:
-                console.print("  [dim][TIER:simple] o4-mini 직접 응답[/dim]")
-                r = oai.chat.completions.create(
-                    model="o4-mini",
-                    messages=[
-                        {"role": "system", "content": "당신은 MAESTRO 어시스턴트입니다. 한국어로 간결하게 답변하세요."},
-                        {"role": "user", "content": content}
-                    ],
-                    max_tokens=1000
-                )
-                return r.choices[0].message.content.strip()
-            except Exception:
-                pass  # 실패 시 표준 루프로 폴백
-
-    elif tier == "complex":
-        # 복잡 쿼리: gpt-4.1에게 "앙상블 먼저 호출" 강제 지시
-        console.print("  [dim][TIER:complex] 앙상블 우선 모드[/dim]")
-        messages.insert(1, {
-            "role": "system",
-            "content": (
-                "[TIER=complex 감지] 이 요청은 전략·분석·보고서 등 고품질 작업입니다. "
-                "반드시 첫 번째 도구로 ask_ensemble을 호출해 Claude+Gemini+DeepSeek 의견을 수집하세요. "
-                "단, 코딩/개발/파일 작성 요청이면 ask_claude_code를 먼저 호출하세요."
-            )
-        })
+    # complex: 전략/분석/보고서 → 첫 도구를 ask_ensemble 로 강제
+    # 코딩은 ask_claude_code 로 강제 (앙상블보다 Claude Code가 우위)
+    _force_first_tool: str | None = None
+    if tier == "complex":
+        t_lower = user_input.lower()
+        coding_kw = ["코드", "코딩", "개발", "구현", "버그", "함수", "클래스", "앱", "api", "짜줘", "만들어"]
+        if any(k in t_lower for k in coding_kw):
+            _force_first_tool = "ask_claude_code"
+            console.print("  [dim][TIER:complex/coding] Claude Code 우선 실행[/dim]")
+        else:
+            _force_first_tool = "ask_ensemble"
+            console.print("  [dim][TIER:complex] 앙상블 우선 실행 (Claude+Gemini+DeepSeek→GPT-4.1)[/dim]")
 
     # ── 응답 캐시: 유사도 97% 이상만, user 메시지 끝에 참고로 첨부 ──
     if not history:   # 첫 턴에만 (문맥 없을 때)
@@ -2015,12 +2009,18 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
     while iteration < max_iterations:
         iteration += 1
 
+        # 첫 iteration에서 강제 도구가 지정된 경우 tool_choice로 강제
+        if iteration == 1 and _force_first_tool:
+            tc = {"type": "function", "function": {"name": _force_first_tool}}
+        else:
+            tc = "auto"
+
         try:
             response = oai.chat.completions.create(
                 model="gpt-4.1",
                 messages=messages,
                 tools=_TOOL_DEFS,
-                tool_choice="auto",
+                tool_choice=tc,
                 max_tokens=4000,
                 temperature=0.7
             )
