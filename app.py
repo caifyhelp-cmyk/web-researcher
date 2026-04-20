@@ -549,20 +549,26 @@ def call_brain_agent(config, all_results, insights):
         f"- {r.get('domain','')}: {r.get('gpt',{}).get('한줄요약','')}"
         for r in all_results[:8]
     )
+    situation = (
+        f"업종/주제: {config.get('keyword','')}\n"
+        f"목표: {config.get('context','시장 이해 및 전략 도출')}\n"
+        f"수집 항목: {', '.join(config.get('needs',[]))}\n\n"
+        f"리서치 결과:\n{findings}\n\n"
+        f"종합 인사이트:\n{insights[:600]}"
+    )
     try:
-        resp = http_req.post(f"{BRAIN_AGENT_URL}/api/ask", json={
-            "industry":     config.get("keyword",""),
-            "company_size": "중소",
-            "challenge":    f"{config.get('keyword','')} 마케팅 전략 수립",
-            "context":      f"리서치:\n{findings}\n\n인사이트:\n{insights[:500]}",
-            "goal":         config.get("context","시장 이해 및 전략 도출"),
-            "assets":       ", ".join(config.get("needs",[])),
-            "constraints":  "",
-        }, timeout=40)
+        resp = http_req.post(f"{BRAIN_AGENT_URL}/api/research", json={
+            "situation": situation,
+        }, timeout=60)
         if resp.status_code == 200:
             d = resp.json()
-            if d.get("status") == "ok":
-                return d.get("result",{}), d.get("fired_patterns",[])
+            if d.get("ok"):
+                result = {
+                    "judgment": d.get("judgment", ""),
+                    "reason":   d.get("reason", ""),
+                    "action":   d.get("action", ""),
+                }
+                return result, []
     except Exception as e:
         print(f"[뇌 에이전트] {e}")
     return None, []
