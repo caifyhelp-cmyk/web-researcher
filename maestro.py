@@ -824,7 +824,7 @@ def _tool_ask_specialist(model: str, prompt: str, category: str = "") -> str:
             return "[Gemini API 키 없음]"
         try:
             r = gemini_ai.chat.completions.create(
-                model="gemini-2.5-flash",   # thinking 내장, 2026 최신 stable
+                model="gemini-2.5-pro",     # 2026 최고품질, thinking 내장
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=4000
             )
@@ -2133,7 +2133,7 @@ _TOOL_DEFS = [
             "특정 LLM 전문가에게 작업을 위임합니다. 2026년 4월 최신 모델 기준.\n"
             "- o3      : 최상위 추론. 수학·논리·복잡한 단계별 분석 (가장 강력, 느림)\n"
             "- claude  : claude-opus-4-6. 긴 문서·보고서·전략 인사이트·세밀한 글쓰기\n"
-            "- gemini  : gemini-2.5-flash (thinking 내장). 멀티모달·대용량 컨텍스트·문서 요약\n"
+            "- gemini  : gemini-2.5-pro (thinking 내장). 멀티모달·대용량 컨텍스트·문서 요약\n"
             "- gpt-4.1 : 구조화 출력·데이터 추출·코딩·instruction 정밀 수행\n"
             "- deepseek: 복잡한 추론·알고리즘·코드 분석 (저비용 추론)\n"
             "- grok    : 실시간/최신 정보, 뉴스, 트렌드, X(Twitter) 데이터\n"
@@ -2382,6 +2382,42 @@ _SYSTEM_BASE = """[절대 규칙] 모든 응답은 반드시 한국어로만 작
 
 ---
 
+## 응답 전 내부 추론 순서 (출력엔 안 보여도 반드시 이 순서로 생각)
+
+1. 외부 소거: 경쟁사/시장/환경에서 원인이 있는가? 내부 단정 전에 먼저.
+2. 자산 확인: 새로 만들기 전에 기존 고객/DB/팔로워/후기/콘텐츠로 커버 가능한가?
+3. 구조 가능성: 반복 구조로 만들 수 있나? 한 번 설계하면 굴러가는 형태인가?
+4. 소거 후 결론: 위 3가지 검토 후 남은 가장 단단한 방향 하나만 제시.
+
+---
+
+## 응답 예시 (이 방식으로 답할 것)
+
+[나쁜 답 — 하지 말 것]
+Q: "매출이 안 늘어요. 어떻게 해야 할까요?"
+A: SNS 강화, 광고 예산 증대, 콘텐츠 개선, 고객 서비스 향상을 고려해보세요.
+→ 문제: 원인 분석 없이 일반론 나열. 소거 없음. 뻔함.
+
+[좋은 답 — 이렇게 할 것]
+Q: "매출이 안 늘어요. 어떻게 해야 할까요?"
+A: 유입이 있는데 전환이 안 되는 건지, 유입 자체가 없는 건지 먼저 분리해야 해요.
+   유입 있고 전환 없음 → 광고 문제 아닙니다. 제품/가격/상담 구조 먼저 봐야 해요.
+   유입 없음 → 기존 DB/팔로워에 먼저 태워봤는지 확인 후 채널 얘기예요.
+   지금 어느 쪽인가요?
+
+[나쁜 답 — 하지 말 것]
+Q: "새 서비스 런칭하려는데 어떻게 시작할까요?"
+A: 시장 조사를 하고, 타겟을 설정하고, MVP를 만들고, 피드백을 받아보세요.
+→ 문제: 기존 자산 무시. 모든 사람에게 통하는 교과서 답변.
+
+[좋은 답 — 이렇게 할 것]
+Q: "새 서비스 런칭하려는데 어떻게 시작할까요?"
+A: 먼저 확인해야 할 게 있어요. 지금 기존 고객 DB나 팔로워가 있나요?
+   있으면 새 채널 뚫기 전에 그쪽에 먼저 올라타는 게 맞아요. 반응 보고 확장.
+   없으면 경쟁사 상위 채널 분석해서 그들이 안 가는 틈새를 먼저 찾아야 해요.
+
+---
+
 ## 도구 목록
 
 **vercel_deploy** — Vercel 무료 배포
@@ -2585,6 +2621,29 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
                 f"{cached_resp[:600]}"
             )
             console.print(f"  [dim][CACHE] 유사 답변 참고 첨부 (유사도 {sim:.0%})[/dim]")
+
+
+    # ── ask_brain 강제 선실행: 판단/방향 키워드 감지 시 시스템 프롬프트에 주입 ──
+    _BRAIN_TRIGGER_KW = [
+        "어떻게", "뭐가 나을까", "뭐가 더", "방향", "전략", "어디서 시작",
+        "구조", "계획", "어떤 게", "어떤게", "뭐부터", "추천",
+        "판단", "맞나", "괜찮나", "해야 할까", "시작할까",
+        "어떻게 하면", "어떻게 해야", "먼저", "접근",
+    ]
+    if any(k in user_input for k in _BRAIN_TRIGGER_KW):
+        try:
+            _brain_pre = _call_brain(user_input)
+            if _brain_pre and "[오류]" not in _brain_pre and "[실패]" not in _brain_pre:
+                messages[0]["content"] += (
+                    "
+
+[뇌 에이전트 사전 판단 — 반드시 이것을 baseline으로 삼아 답변하세요]
+"
+                    + _brain_pre
+                )
+                console.print("  [dim][BRAIN-PRE] 뇌 에이전트 사전 판단 주입됨[/dim]")
+        except Exception:
+            pass
 
     messages.append({"role": "user", "content": content})
 
