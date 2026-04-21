@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "2.8.2"
+VERSION = "2.8.3"
 
 # ── 개인 맞춤화 엔진 ─────────────────────────────────────────────
 try:
@@ -559,6 +559,59 @@ _BRAIN_URL = "https://brain-agent-v9wl.onrender.com/api/research"
 
 import urllib.request, urllib.error
 
+
+_BRAIN_CAT_MAP = {
+    "런칭/가격 판단":          ["런칭", "출시", "시작", "오픈", "가격", "비용"],
+    "외부 우선 (Outside-In)":  ["시작", "어떻게", "방향", "전략", "경쟁"],
+    "자산 활용 — 기존 고객":   ["고객", "기존", "팔로워", "재구매", "명단"],
+    "채널 판단":               ["광고", "채널", "인스타", "유튜브", "마케팅", "홈보"],
+    "전환 판단":               ["전환", "매출", "구매", "문의", "계약"],
+    "파트너십 판단":           ["파트너", "협업", "제안", "협력"],
+    "구조 설계 / 락인":        ["구조", "시스템", "자동화", "반복"],
+    "실행/의사결정 메타":       ["해야", "말까", "결정", "선택", "먼저"],
+    "경쟁 포지셔닝":           ["경쟁사", "포지셔닝", "차별", "브랜드"],
+    "타겟 착시 간파":          ["타겟", "고객층", "연령", "누구"],
+    "위기 / 정체 대응":        ["정체", "하락", "위기", "막혀"],
+    "성장 / 확장 전략":        ["확장", "성장", "스케일", "늘리"],
+    "증명 우선":               ["증명", "보여", "사례", "후기", "결과"],
+}
+
+def _brain_local(situation: str) -> str:
+    import os, sqlite3 as _sq
+    db_path = os.path.join(os.path.expanduser("~"), "thinking_agent", "thinking_brain.db")
+    try:
+        conn = _sq.connect(db_path)
+        s = situation.lower()
+        scores: dict = {}
+        for cat, kws in _BRAIN_CAT_MAP.items():
+            sc = sum(1 for k in kws if k in s)
+            if sc > 0:
+                scores[cat] = sc
+        if not scores:
+            scores = {"외부 우선 (Outside-In)": 1, "실행/의사결정 메타": 1}
+        top_cats = sorted(scores, key=scores.get, reverse=True)[:4]
+        lines = ["[이 상황에 적용되는 구체적 패턴들 — 반드시 이것을 근거로 답하세요]"]
+        for cat in top_cats:
+            rows = conn.execute(
+                """SELECT rule FROM patterns_db
+                   WHERE category=?
+                     AND rule NOT LIKE '%미흥%'
+                     AND rule NOT LIKE '%부재%'
+                     AND rule NOT LIKE '%실패%'
+                   ORDER BY id LIMIT 8""",
+                (cat,)
+            ).fetchall()
+            if rows:
+                lines.append(f"
+[{cat}]")
+                for r in rows:
+                    lines.append(f"  - {r[0][:130]}")
+        conn.close()
+        return "
+".join(lines)
+    except Exception:
+        return ""
+
 def _call_brain(situation: str) -> str:
     ping_url  = _BRAIN_URL.replace("/api/research", "/")
     api_url   = _BRAIN_URL
@@ -573,7 +626,7 @@ def _call_brain(situation: str) -> str:
         body = json.dumps({"situation": situation}, ensure_ascii=False).encode()
         req  = urllib.request.Request(api_url, data=body, method="POST",
                                       headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=90) as r:   # 콜드 스타트 고려 90초
+        with urllib.request.urlopen(req, timeout=15) as r:   # 보조 역할, 짧게
             data = json.loads(r.read())
         if data.get("ok"):
             parts = []
@@ -2614,25 +2667,29 @@ def run_agent(user_input: str, history: list, auto_confirm: bool = False) -> str
             console.print(f"  [dim][CACHE] 유사 답변 참고 첨부 (유사도 {sim:.0%})[/dim]")
 
 
-    # ── ask_brain 강제 선실행: 판단/방향 키워드 감지 시 시스템 프롬프트에 주입 ──
+    # ── 뇌 패턴 선주입: 로컈 DB 직접 조회(항상) + 원격 API(보조) ──
     _BRAIN_TRIGGER_KW = [
-        "어떻게", "뭐가 나을까", "뭐가 더", "방향", "전략", "어디서 시작",
-        "구조", "계획", "어떤 게", "어떤게", "뭐부터", "추천",
-        "판단", "맞나", "괜찮나", "해야 할까", "시작할까",
+        "어떻게", "뜨가 나을까", "뜨가 더", "방향", "전략", "어디서 시작",
+        "구조", "계획", "어때 게", "어때게", "델부터", "추천",
+        "판단", "맞나", "괴찮나", "해야 할까", "시작할까",
         "어떻게 하면", "어떻게 해야", "먼저", "접근",
+        "광고", "런칭", "매출", "고객", "파트너", "경쟁",
     ]
     if any(k in user_input for k in _BRAIN_TRIGGER_KW):
+        _local_patterns = _brain_local(user_input)
+        if _local_patterns:
+            messages[0]["content"] += "
+
+" + _local_patterns
+            console.print("  [dim][BRAIN-LOCAL] 로컈 패턴 주입됨[/dim]")
         try:
             _brain_pre = _call_brain(user_input)
-            if _brain_pre and "[오류]" not in _brain_pre and "[실패]" not in _brain_pre:
-                messages[0]["content"] += (
-                    "
+            if _brain_pre and "[오류]" not in _brain_pre and "[실패]" not in _brain_pre and "[연결 실패]" not in _brain_pre:
+                messages[0]["content"] += "
 
-[뇌 에이전트 사전 판단 — 반드시 이것을 baseline으로 삼아 답변하세요]
-"
-                    + _brain_pre
-                )
-                console.print("  [dim][BRAIN-PRE] 뇌 에이전트 사전 판단 주입됨[/dim]")
+[뇌 에이전트 종합 판단]
+" + _brain_pre
+                console.print("  [dim][BRAIN-API] 원격 종합 판단 추가됨[/dim]")
         except Exception:
             pass
 
