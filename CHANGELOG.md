@@ -2,6 +2,17 @@
 
 ---
 
+## v2.8.6 (2026-04-21) — 세션 재개 후 추가 수정
+
+### brain-agent 연동 관련
+- Render `ANTHROPIC_API_KEY` 미설정 → 영상 시뮬 401 에러 수정
+- Anthropic API 키 갱신 (구 키 만료)
+- brain-agent SQLite 데이터 소실 수정 (PostgreSQL 폴백 제거)
+- `thinking={'type': 'adaptive'}` → 제거 (유효하지 않은 API 값)
+- Gunicorn timeout 120s → 300s
+
+---
+
 ## v2.8.6 (2026-04-21)
 
 ### 버그 수정
