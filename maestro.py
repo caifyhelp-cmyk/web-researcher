@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "2.8.5"
+VERSION = "2.8.6"
 
 # ── 개인 맞춤화 엔진 ─────────────────────────────────────────────
 try:
@@ -561,6 +561,23 @@ import urllib.request, urllib.error
 
 
 
+def _fmt_patterns(patterns_data) -> str:
+    """API에서 받은 patterns 리스트 → 읽기 좋은 문자열 변환"""
+    if not patterns_data:
+        return ""
+    if isinstance(patterns_data, str):
+        return patterns_data
+    lines = []
+    for item in patterns_data:
+        cat   = item.get("category", "")
+        rules = item.get("rules", [])
+        if cat:
+            lines.append(f"[{cat}]")
+        for r in rules:
+            lines.append(f"  - {r}")
+    return "\n".join(lines)
+
+
 def _call_brain(situation: str) -> str:
     """뇌 에이전트 API 호출 → 종합판단 문자열 반환 (ask_brain 도구용)"""
     api_url = _BRAIN_URL
@@ -575,9 +592,9 @@ def _call_brain(situation: str) -> str:
             if data.get("judgment"): parts.append(f"판단: {data['judgment']}")
             if data.get("action"):   parts.append(f"액션: {data['action']}")
             if data.get("reason"):   parts.append(f"근거: {data['reason']}")
-            # 패턴 리스트도 포함
-            if data.get("patterns"):
-                parts.append("\n[관련 패턴]\n" + data["patterns"])
+            pat_str = _fmt_patterns(data.get("patterns"))
+            if pat_str:
+                parts.append("\n[관련 패턴]\n" + pat_str)
             return "\n".join(parts) or "[뇌 에이전트 응답 없음]"
         err = data.get("error", "")
         return f"[뇌 에이전트 오류: {err}]"
@@ -600,9 +617,9 @@ def _call_brain_full(situation: str) -> str:
         if data.get("judgment"): parts.append(f"종합판단: {data['judgment']}")
         if data.get("action"):   parts.append(f"권장액션: {data['action']}")
         if data.get("reason"):   parts.append(f"근거: {data['reason']}")
-        if data.get("patterns"):
-            parts.append("\n[관련 패턴 — 카테고리별 원칙]")
-            parts.append(data["patterns"])
+        pat_str = _fmt_patterns(data.get("patterns"))
+        if pat_str:
+            parts.append("\n[관련 패턴 — 카테고리별 원칙]\n" + pat_str)
         return "\n".join(parts)
     except Exception:
         return ""
