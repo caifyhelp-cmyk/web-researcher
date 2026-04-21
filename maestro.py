@@ -18,7 +18,7 @@ import os, sys, json, re, subprocess, time
 from pathlib import Path
 from datetime import datetime
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 
 # ── 개인 맞춤화 엔진 ─────────────────────────────────────────────
 try:
