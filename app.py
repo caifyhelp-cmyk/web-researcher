@@ -118,7 +118,7 @@ MARKETING_KW = [
 st.set_page_config(
     page_title="웹 리서치 어시스턴트",
     page_icon="🔍", layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 st.markdown("""
 <style>
@@ -900,28 +900,6 @@ with st.sidebar:
     if chips:
         chip_html = "".join(f'<span class="rule-chip">{c}</span>' for c in chips)
         st.markdown(chip_html, unsafe_allow_html=True)
-
-    # 최근 조사
-    history = load_history(st.session_state.username)
-    if history:
-        st.markdown("---")
-        st.markdown("**최근 조사**")
-        for h in history[:5]:
-            st.markdown(
-                f"<small style='color:#64748b'>{h.get('timestamp','')[:10]}</small><br/>"
-                f"<span style='color:#94a3b8;font-size:12px'>{h.get('keyword','')[:18]} ({h.get('result_count',0)}개)</span>",
-                unsafe_allow_html=True)
-
-    # 피드백 이력
-    fb_history = profile.get("feedback_history",[])
-    if fb_history:
-        st.markdown("---")
-        st.markdown("**최근 피드백**")
-        for fb in fb_history[:3]:
-            st.markdown(
-                f"<small style='color:#64748b'>{fb.get('timestamp','')[:10]}</small><br/>"
-                f"<span style='color:#94a3b8;font-size:11px'>{fb.get('changes_summary','')[:40]}</span>",
-                unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════
